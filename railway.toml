@@ -1,0 +1,8 @@
+# Railway detects Node from package.json and builds automatically.
+# This only tells it how to start the app and how to check it is healthy.
+[deploy]
+startCommand = "node server.js"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
