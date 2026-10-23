@@ -20,7 +20,6 @@ const SECRET = process.env.SESSION_SECRET || PASSWORD
 const COOKIE = 'qd_session'
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000
 const PUBLIC = path.join(__dirname, 'public')
-const ALLOWED_DAYS = new Set([7, 30, 90])
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 const sha = s => crypto.createHash('sha256').update(String(s)).digest()
@@ -168,11 +167,13 @@ async function handle(req, res) {
 
   if (p === '/api/metrics') {
     if (!process.env.DATABASE_URL) return json(res, 503, { error: 'DATABASE_URL is not set in Railway Variables.' })
-    const days = Number(url.searchParams.get('days') || 30)
-    if (!ALLOWED_DAYS.has(days)) return json(res, 400, { error: 'days must be 7, 30 or 90' })
+    const { getMetrics, resolveRange } = require('./lib/metrics')
+    let range
     try {
-      const { getMetrics } = require('./lib/metrics')
-      const data = await getMetrics(days, { force: url.searchParams.get('refresh') === '1' })
+      range = resolveRange({ days: url.searchParams.get('days'), from: url.searchParams.get('from'), to: url.searchParams.get('to') })
+    } catch (e) { return json(res, 400, { error: e.message }) }
+    try {
+      const data = await getMetrics(range, { force: url.searchParams.get('refresh') === '1' })
       return json(res, 200, data)
     } catch (err) {
       console.error('[metrics] failed:', err.message)

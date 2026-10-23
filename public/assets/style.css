@@ -138,3 +138,21 @@ tr:last-child td { border-bottom: 0; }
 .login input { width: 100%; padding: 10px 12px; font: inherit; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .login button { margin-top: 14px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: var(--ink); color: var(--paper); font-weight: 600; cursor: pointer; }
 .login-error { color: var(--neg); margin: 12px 0 0 !important; font-size: 14px; }
+
+/* custom range */
+.custom { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.custom[hidden] { display: none; }
+.custom input { font: inherit; padding: 5px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); }
+
+/* day-by-day table */
+.daily { font-size: 13px; }
+.daily th, .daily td { padding: 6px 10px 6px 0; white-space: nowrap; }
+.daily th { position: sticky; top: 0; background: var(--paper); }
+.daily td:first-child, .daily th:first-child { position: sticky; left: 0; background: var(--paper); padding-right: 14px; z-index: 1; }
+.daily tr.tot td { font-weight: 600; border-bottom: 2px solid var(--rule); }
+.daily .z { color: var(--rule); }
+.daily .today td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.daily .scrollbox { max-height: 560px; overflow: auto; border: 1px solid var(--rule); border-radius: 6px; padding: 0 12px; }
+.mini { display: inline-block; width: 46px; height: 6px; background: var(--accent-soft); border-radius: 2px; margin-left: 8px; vertical-align: middle; overflow: hidden; }
+.mini i { display: block; height: 100%; background: var(--accent); }
+.rowhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }

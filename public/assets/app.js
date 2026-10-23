@@ -34,6 +34,7 @@ function delta(cur, prev, days) {
   return { t: `${p > 0 ? '+' : p < 0 ? '−' : ''}${Math.abs(p)}%${label}`, c: p > 0 ? 'up' : p < 0 ? 'down' : 'flat' }
 }
 
+let PL = 'the last 30 days'
 const errBox = (name, sec) => h('div', { class: 'err' }, `${name} unavailable: `, h('code', null, sec ? sec.error : 'no data'))
 const empty = text => h('div', { class: 'empty' }, text)
 
@@ -170,7 +171,7 @@ function pulse(D, days) {
     tile('New accounts', fmt(su?.period), su && delta(su.period, su.prev, days), su && `${fmt(su.total)} total, ${pct(su.google, su.total)} Google`),
     tile('Locked a decision', fl ? pct(fl.locked, fl.sessions) : '–', null, fl && `${fmt(fl.locked)} of ${fmt(fl.sessions)} decisions`),
     tile('Paid access now', S.access?.ok ? fmt(paying) : '–', null, D.mrr_estimate != null ? `about ${inr(D.mrr_estimate)} a month` : null),
-    tile('Guest sessions', gp ? inr(gp.amount_period) : '–', null, gp ? `${fmt(gp.n_period)} paid in the last ${days} days` : null))
+    tile('Guest sessions', gp ? inr(gp.amount_period) : '–', null, gp ? `${fmt(gp.n_period)} paid in ${PL}` : null))
 }
 
 function journey(D) {
@@ -200,11 +201,11 @@ function growth(D, days) {
   const lines = [{ key: 'sessions', label: 'Decisions', color: 'var(--accent)' }, { key: 'people', label: 'People deciding', color: 'var(--ink)', dash: '5 4' },
     { key: 'signups', label: 'New accounts', color: 'var(--pos)' }]
   const utm = rowsOf(S.acq_utm), inv = val(S.acq_invites), ref = val(S.acq_referrals), vc = val(S.visitor_counter)
-  return section('Growth', `Day by day for the last ${days} days.`,
+  return section('Growth', `Day by day for ${PL}.`,
     `Days follow the ${D.params.tz} timezone. A “person” is a signed-in user, or a browser (device id) if they never signed in; if someone decided anonymously and later signed in on the same browser they count once. Decisions made without a device id or account (cookie consent declined) are counted as decisions but not as people.`,
     block('Decisions, people and accounts', null, S.daily?.ok ? trendChart(merged, lines) : errBox('Daily series', S.daily)),
     h('div', { class: 'cols' },
-      block('How people signed up', `Accounts created in the last ${days} days.`,
+      block('How people signed up', `Accounts created in ${PL}.`,
         su ? splitBar([{ label: 'Google', value: su.google_period }, { label: 'Magic link', value: su.magic_link_period }]) : errBox('Signups', S.signups)),
       block('Where new accounts came from', 'By signup UTM source and campaign.',
         S.acq_utm?.ok ? (utm.length ? barRows(utm.map(r => ({ label: r.campaign ? `${r.src} / ${r.campaign}` : r.src, value: r.n }))) : empty('No new accounts in this window.')) : errBox('Sources', S.acq_utm))),
@@ -216,19 +217,71 @@ function growth(D, days) {
         vc ? stats([{ v: fmt(vc.n), l: 'counter value (seeded at 150, increments on visits)' }]) : errBox('Visitor counter', S.visitor_counter))))
 }
 
+
+const DAILY_COLS = [
+  { key: 'sessions', src: 'daily', label: 'Decisions', bar: true }, { key: 'people', src: 'daily', label: 'People', noTotal: true },
+  { key: 'new_people', src: 'daily', label: 'New people' }, { key: 'council', src: 'daily', label: 'Council' }, { key: 'locked', src: 'daily', label: 'Locked' },
+  { key: 'chats', src: 'chats_daily', label: 'Chats started' }, { key: 'confirmed', src: 'chats_daily', label: 'Chats confirmed' },
+  { key: 'landing', src: 'events_daily', label: 'Landing views' }, { key: 'started', src: 'events_daily', label: 'Decisions started' },
+  { key: 'signups', src: 'daily', label: 'New accounts' }, { key: 'sign_ins', src: 'events_daily', label: 'Sign-ins' }, { key: 'returns', src: 'events_daily', label: 'Return visits' },
+  { key: 'orders', src: 'money_daily', label: 'Guest orders' }, { key: 'paid', src: 'money_daily', label: 'Guest paid' }, { key: 'revenue', src: 'money_daily', label: 'Guest ₹', money: true },
+  { key: 'paid_conv', src: 'events_daily', label: 'Paid conversions' }, { key: 'emails', src: 'emails_daily', label: 'Emails' }, { key: 'calls', src: 'ai_daily', label: 'AI calls' },
+]
+
+function dailyRows(D) {
+  const S = D.sections, byDay = {}
+  for (const src of new Set(DAILY_COLS.map(c => c.src))) for (const r of rowsOf(S[src])) byDay[r.day] = { ...(byDay[r.day] || { day: r.day }), ...r }
+  return Object.values(byDay).sort((a, b) => (a.day < b.day ? -1 : 1))
+}
+
+function downloadCsv(D, rows) {
+  const ok = c => S_OK(D, c.src)
+  const cols = DAILY_COLS.filter(ok)
+  const lines = [['day', ...cols.map(c => c.label)].join(',')]
+  for (const r of rows) lines.push([r.day, ...cols.map(c => r[c.key] ?? '')].join(','))
+  const a = h('a', { href: URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/csv' })), download: `quorum-daily-${D.params.from}-to-${D.params.to}.csv` })
+  document.body.append(a); a.click(); a.remove()
+}
+const S_OK = (D, src) => !!(D.sections[src] && D.sections[src].ok)
+
+function daily(D) {
+  const rows = dailyRows(D), failed = [...new Set(DAILY_COLS.map(c => c.src))].filter(src => !S_OK(D, src))
+  const maxDec = Math.max(1, ...rows.map(r => r.sessions || 0))
+  const tot = key => rows.reduce((a, r) => a + (Number(r[key]) || 0), 0)
+  const cell = (r, c) => {
+    if (!S_OK(D, c.src)) return h('td', { class: 'num muted' }, '–')
+    const v = r[c.key] ?? 0
+    const txt = c.money ? (v ? inr(v) : '·') : (v ? fmt(v) : '·')
+    return h('td', { class: `num${v ? '' : ' z'}` }, txt, c.bar && v ? h('span', { class: 'mini' }, h('i', { style: { width: `${(100 * v) / maxDec}%` } })) : null)
+  }
+  const newest = [...rows].reverse()
+  return section('Day by day', `Every day in ${PL}, newest first.`,
+    `Days follow ${D.params.tz}. Each column is the sum for that calendar day. People is the number of distinct people deciding that day, so it is not added up in the total row (the same person on two days counts twice). Chats and decisions start from different tables, so they differ slightly. The first row of totals matches the numbers at the top of the page.`,
+    h('div', { class: 'blk' },
+      h('div', { class: 'rowhead' }, h('p', { class: 'sub' }, `${rows.length} days. Zeros show as a dot.`), h('button', { class: 'btn', type: 'button', onclick: () => downloadCsv(D, rows) }, 'Download CSV')),
+      rows.length ? h('div', { class: 'daily' }, h('div', { class: 'scrollbox' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Day'), DAILY_COLS.map(c => h('th', { class: 'num' }, c.label)))),
+        h('tbody', null,
+          h('tr', { class: 'tot' }, h('td', null, 'Total'), DAILY_COLS.map(c => h('td', { class: 'num' }, !S_OK(D, c.src) ? '–' : c.noTotal ? '' : c.money ? inr(tot(c.key)) : fmt(tot(c.key))))),
+          newest.map(r => h('tr', { class: r.day === D.params.today ? 'today' : null },
+            h('td', null, shortDate(r.day, { weekday: 'short', day: 'numeric', month: 'short' }), r.day === D.params.today ? h('span', { class: 'muted' }, ' (so far)') : null),
+            DAILY_COLS.map(c => cell(r, c)))))))) : empty('No data.'),
+      failed.length ? h('p', { class: 'small muted' }, `Some columns are blank because these sources could not load: ${failed.join(', ')}.`) : null))
+}
+
 function frontDoor(D, days) {
   const S = D.sections, cov = val(S.events_coverage)
   if (!S.events_funnel?.ok) return section('The front door', 'What people do before and around a decision.', null, errBox('Events', S.events_funnel))
   const byEvent = Object.fromEntries(rowsOf(S.events_funnel).map(r => [r.event, r]))
   const seen = new Set()
   const groups = EVENT_GROUPS.map(([title, keys]) => {
-    const items = keys.filter(k => byEvent[k]).map(k => { seen.add(k); return { label: EVENT_LABELS[k], value: byEvent[k].n, people: byEvent[k].people } })
-    return items.length ? block(title, null, barRows(items, { fmtVal: i => `${fmt(i.value)} · ${fmt(i.people)} people` })) : null
+    const items = keys.filter(k => byEvent[k]).map(k => { seen.add(k); return { label: EVENT_LABELS[k], value: byEvent[k].n, people: byEvent[k].people, anon: byEvent[k].unidentified } })
+    return items.length ? block(title, null, barRows(items, { fmtVal: i => `${fmt(i.value)} · ${fmt(i.people)} people${i.anon ? `, ${fmt(i.anon)} unidentified` : ''}` })) : null
   })
   const other = Object.keys(byEvent).filter(k => !seen.has(k) && k !== 'gate_arm_assigned')
   const bd = rowsOf(S.events_breakdown), bdEvents = [...new Set(bd.map(r => r.event))]
-  return section('The front door', `What people did in the last ${days} days, from first-party events.`,
-    'Events only exist from the day the tracking build shipped, so a young events table makes early windows look small. “People” counts distinct signed-in users or device ids; visitors who decline functional cookies have no device id, so landing-page people are an undercount.',
+  return section('The front door', `What people did in ${PL}, from first-party events.`,
+    'Events only exist from the day the tracking build shipped, so a young events table makes early windows look small. “People” counts distinct signed-in users or device ids (one person is counted once even if they signed in midway). “Unidentified” events carry neither, which is how first-time visitors look before they accept cookies, so landing-page people is an undercount; use the views and the unidentified count to size it.',
     cov ? h('p', { class: 'muted small' }, `Events recorded: ${fmt(cov.n)}, from ${shortStamp(cov.first_at)} to ${shortStamp(cov.last_at)}.`) : null,
     h('div', { class: 'cols' }, groups.filter(Boolean)),
     other.length ? block('Other events', null, barRows(other.map(k => ({ label: EVENT_LABELS[k] || k, value: byEvent[k].n })))) : null,
@@ -257,6 +310,9 @@ function retention(D) {
     all ? block('Decisions per person, all time', 'Share of people who reached each decision count.',
       table(['', 'People', '1st', '2nd', '3rd', '4th', '5th or more'],
         ['all', 'linked', 'anonymous'].filter(g => R[g]).map(g => [cap(g), fmt(R[g].d1), ...['d1', 'd2', 'd3', 'd4', 'd5'].map(k => `${fmt(R[g][k])} (${pct(R[g][k], R[g].d1)})`)]), [1, 2, 3, 4, 5, 6])) : null,
+    S.repeat_gap?.ok && val(S.repeat_gap) ? (() => { const g = val(S.repeat_gap); return block('How soon the 2nd decision comes', `Of the ${fmt(g.people)} people with a decision on record, ${fmt(g.repeaters)} (${pct(g.repeaters, g.people)}) made a second one. All time. Separates a repeat in one sitting from a real return.`,
+      barRows([{ label: 'Within the hour', value: g.within_hour }, { label: 'Later the same day', value: g.same_day }, { label: '1 to 7 days later', value: g.days_1_7 },
+        { label: '7 to 30 days later', value: g.days_7_30 }, { label: 'More than 30 days later', value: g.days_30_plus }], { fmtVal: i => `${fmt(i.value)} (${pct(i.value, g.repeaters)})` })) })() : errBox('Time to 2nd decision', S.repeat_gap),
     block('Weekly cohorts', 'Of people whose first decision fell in a week, the share who decided again 1, 2, 3 and 4 weeks later.', S.cohorts?.ok ? cohortTable : errBox('Cohorts', S.cohorts)),
     block('How many decisions people made in this window', null,
       S.depth?.ok ? (depth.length ? barRows(depth.map(r => ({ label: `${r.bucket} decision${r.bucket === '1' ? '' : 's'}`, value: r.people })), { fmtVal: i => `${fmt(i.value)} people` }) : empty('No decisions in this window.')) : errBox('Depth', S.depth)))
@@ -277,7 +333,7 @@ function inside(D, days) {
   const personaItems = Object.entries(byPersona).filter(([, v]) => v.assistant).map(([k, v]) => ({ label: PERSONAS[k] || k, value: v.assistant })).sort((a, b) => b.value - a.value)
   const userTurns = pers.filter(r => r.role === 'user').reduce((a, r) => a + r.n, 0)
   const score = oc && oc.total ? (oc.yes + 0.5 * oc.partially) / oc.total : null
-  return section('Inside a session', `How people use a decision, for the last ${days} days.`,
+  return section('Inside a session', `How people use a decision, for ${PL}.`,
     'Depth is “checkpoint” (stopped after confirming) or “council” (convened the advisors). Register is how the person framed the decision. Advisor counts are numbers of messages by persona; message text is never read. Confidence is the 1–10 re-rating after the synthesis. The weekday-by-hour map covers the last 90 days regardless of the window.',
     h('div', { class: 'cols' },
       block('How sessions start and go deep', null,
@@ -288,18 +344,19 @@ function inside(D, days) {
           { v: pct(fl.shared, fl.sessions), l: `shared a record (${fmt(fl.shared)})` }, { v: pct(fl.follow_ups, fl.sessions), l: `linked follow-ups (${fmt(fl.follow_ups)})` },
           { v: fl.avg_conf ?? '–', l: `average confidence out of 10 (${fmt(fl.n_conf)} ratings)` }, { v: fmt(fl.nudged), l: 'got a Council nudge' }]) : errBox('Behaviour', S.flags))),
     h('div', { class: 'cols' },
-      block('Which advisors speak', `Advisor messages in the last ${days} days. ${fmt(userTurns)} messages from people.`,
+      block('Which advisors speak', `Advisor messages in ${PL}. ${fmt(userTurns)} messages from people.`,
         S.personas?.ok ? (personaItems.length ? barRows(personaItems) : empty('No Council messages in this window.')) : errBox('Advisors', S.personas)),
       block('Did the Council help?', 'What people said when they recorded an outcome.',
         oc ? (oc.total ? h('div', null, stats([{ v: score == null ? '–' : `${Math.round(score * 100)}%`, l: 'helpfulness (yes counts 1, partly 0.5)' }, { v: pct(oc.eligible_with_outcome, oc.eligible), l: `of completed decisions older than 30 days have an outcome (${fmt(oc.eligible_with_outcome)} of ${fmt(oc.eligible)})` }]),
-          h('div', { style: { height: '12px' } }), splitBar([{ label: 'Yes', value: oc.yes }, { label: 'Partly', value: oc.partially }, { label: 'No', value: oc.no }])) : empty('No outcomes recorded yet.')) : errBox('Outcomes', S.outcomes))),
+          h('div', { style: { height: '12px' } }), splitBar([{ label: 'Yes', value: oc.yes }, { label: 'Partly', value: oc.partially }, { label: 'No', value: oc.no }]),
+          (() => { const r = val(S.outcome_reach); return r && r.eligible ? h('div', { style: { marginTop: '14px' } }, stats([{ v: pct(r.eligible_linked, r.eligible), l: `of the ${fmt(r.eligible)} decisions due a 30-day check-in belong to signed-in people we can email` }, { v: `${pct(r.linked_with_outcome, r.eligible_linked)} vs ${pct(r.with_outcome - r.linked_with_outcome, r.eligible - r.eligible_linked)}`, l: 'have an outcome: signed-in vs not signed-in' }])) : null })()) : empty('No outcomes recorded yet.')) : errBox('Outcomes', S.outcomes))),
     block('When people decide', `Weekday and hour in ${D.params.tz}, last 90 days. Darker means more decisions.`, S.heatmap?.ok ? heatmap(rowsOf(S.heatmap)) : errBox('Heat map', S.heatmap)))
 }
 
 function features(D, days) {
   const rows = D.features
   const max = Math.max(1, ...rows.filter(r => r.ok).map(r => r.data.people_period))
-  return section('Features', `Who used what in the last ${days} days.`,
+  return section('Features', `Who used what in ${PL}.`,
     'People are distinct signed-in users; anonymous use cannot be attributed here. Memory facts count only accepted or edited facts, and connectors count only ones not revoked.',
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, ['Feature', 'People', '', 'Rows created', 'People all time'].map((t, i) => h('th', { class: i > 0 && i !== 2 ? 'num' : null }, t)))),
@@ -323,12 +380,12 @@ function revenue(D, days) {
         h('div', null, stats([{ v: D.mrr_estimate == null ? '–' : inr(D.mrr_estimate), l: 'per month, estimated' }]),
           h('p', { class: 'small muted' }, `Prices used: monthly ${inr(pr.monthly)}, annual ${inr(pr.annual)}, founding monthly ${inr(pr.foundingMonthly)}, founding annual ${inr(pr.foundingAnnual)}. Change them with the PRICE_* variables in Railway.`)))),
     h('div', { class: 'cols' },
-      block('Guest decision sessions', `Revenue in the last ${days} days is by payment date.`,
+      block('Guest decision sessions', `Revenue in ${PL} is by payment date.`,
         S.guest_payments?.ok ? (gp.length ? h('div', null, stats([{ v: inr(paid?.amount ?? 0), l: `collected all time (${fmt(paid?.n ?? 0)} paid)` }, { v: inr(paid?.amount_period ?? 0), l: `collected in ${days} days (${fmt(paid?.n_period ?? 0)} paid)` }]),
-          h('div', { style: { height: '12px' } }), table(['Status', 'Orders', 'Last ' + days + ' days'], gp.map(r => [cap(r.status), fmt(r.n), fmt(r.n_period)]), [1, 2])) : empty('No guest orders yet.')) : errBox('Guest payments', S.guest_payments)),
+          h('div', { style: { height: '12px' } }), table(['Status', 'Orders', 'This period'], gp.map(r => [cap(r.status), fmt(r.n), fmt(r.n_period)]), [1, 2])) : empty('No guest orders yet.')) : errBox('Guest payments', S.guest_payments)),
       block('Guest orders by source', 'UTM source on the order.',
         S.guest_by_source?.ok ? (src.length ? table(['Source', 'Orders', 'Paid'], src.map(r => [r.src, fmt(r.orders), fmt(r.paid)]), [1, 2]) : empty('None yet.')) : errBox('Sources', S.guest_by_source))),
-    bd.length ? block('New paid conversions', `From events in the last ${days} days.`, barRows(bd.map(r => ({ label: cap(r.k), value: r.n })))) : null)
+    bd.length ? block('New paid conversions', `From events in ${PL}.`, barRows(bd.map(r => ({ label: cap(r.k), value: r.n })))) : null)
 }
 
 function lifecycle(D, days) {
@@ -336,7 +393,7 @@ function lifecycle(D, days) {
   const fromEv = ev => Object.fromEntries(bd.filter(r => r.event === ev).map(r => [r.k, r.n]))
   const opened = fromEv('notification_opened'), toDec = fromEv('notification_to_decision'), sentBy = Object.fromEntries(sent.map(r => [r.source, r.sent]))
   const sources = [...new Set([...Object.keys(sentBy), ...Object.keys(opened), ...Object.keys(toDec)])].filter(k => k !== '(none)')
-  return section('Nudges and email', `Messages sent and what they led to, for the last ${days} days.`,
+  return section('Nudges and email', `Messages sent and what they led to, for ${PL}.`,
     'Sent comes from the notification log; opened and decided come from events when a visit arrives from a tagged link, so some sources (for example review-date emails) show opens without a sent count, and untagged links show sent only.',
     block('From message to decision', null,
       S.notif_sent?.ok ? (sources.length ? table(['Source', 'Sent', 'Opened', 'Then decided', 'Opened of sent', 'Decided of opened'],
@@ -355,7 +412,7 @@ function platform(D, days) {
   return section('Platform and data health', 'Model routing, institutions, and how trustworthy the numbers are.',
     'Model routing is only recorded while tiered routing is switched on. Test accounts listed in EXCLUDE_EMAILS are removed from every number, along with the browsers they used.',
     h('div', { class: 'cols' },
-      block('Which model answered', `AI calls in the last ${days} days.`,
+      block('Which model answered', `AI calls in ${PL}.`,
         S.ai_usage?.ok ? (ai.length ? table(['Tier', 'Role', 'Target', 'Calls', 'Overrides'], ai.map(r => [r.tier, r.role, r.target, fmt(r.calls), fmt(r.overrides)]), [3, 4]) : empty('No calls logged. This stays empty unless tiered routing is on.')) : errBox('AI usage', S.ai_usage)),
       block('Institutions', null, ins ? stats([{ v: fmt(ins.institutions), l: `institutions (${fmt(ins.institutions_period)} new)` }, { v: fmt(ins.members), l: `members (${fmt(ins.members_period)} joined)` },
         { v: fmt(ins.cohorts), l: 'cohorts' }, { v: pct(ins.consented, ins.members), l: 'consented to aggregate' }]) : errBox('Institutions', S.institutions))),
@@ -368,28 +425,39 @@ function platform(D, days) {
         ? h('div', { class: 'err', style: { marginTop: '16px' } }, `The database login “${id.db_user}” is subject to Row Level Security, so tables can read as empty and every number here may be too low. Use the default postgres login, or run sql/create_readonly_role.sql.`) : null })(),
       D.exclusions.error ? h('div', { class: 'err', style: { marginTop: '16px' } }, 'Test-account exclusion failed, so these numbers include your own test activity: ', h('code', null, D.exclusions.error)) : null,
       D.exclusions.emails && !D.exclusions.error && D.exclusions.matched_users === 0 ? h('div', { class: 'err', style: { marginTop: '16px' } }, 'None of the addresses in EXCLUDE_EMAILS matched an account. Check the spelling.') : null,
-      failing.length ? h('div', { style: { marginTop: '16px', display: 'grid', gap: '8px' } }, h('p', { class: 'small muted' }, `${failing.length} panel${failing.length === 1 ? '' : 's'} could not load. This usually means a migration has not been run in this database:`),
+      failing.length ? h('div', { style: { marginTop: '16px', display: 'grid', gap: '8px' } }, h('p', { class: 'small muted' }, `${failing.length} panel${failing.length === 1 ? '' : 's'} could not load. “does not exist” means a migration has not been run in this database; “timeout” means the database was slow, so press Refresh:`),
         failing.map(([k, e]) => h('div', { class: 'err' }, `${k}: `, h('code', null, e)))) : h('p', { class: 'small muted' }, 'Every panel loaded.'))))
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────────
 const app = document.getElementById('app')
-let days = Number(localStorage.getItem('qd_days')) || 30
-if (![7, 30, 90].includes(days)) days = 30
+const dm = iso => shortDate(iso, { day: 'numeric', month: 'short', year: 'numeric' })
+let range = (() => { try { const r = JSON.parse(localStorage.getItem('qd_range')); if (r && (r.days || (r.from && r.to))) return r } catch {} return { days: 30 } })()
 let inflight = 0
 
 function render(D) {
-  app.replaceChildren(pulse(D, days), journey(D), growth(D, days), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), platform(D, days))
+  const days = D.params.days
+  PL = D.params.custom ? `the period ${dm(D.params.from)} to ${dm(D.params.to)}` : `the last ${days} days`
+  app.replaceChildren(pulse(D, days), journey(D), growth(D, days), daily(D), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), platform(D, days))
   const t = new Date(D.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: D.params.tz })
   document.getElementById('stamp').textContent = `Updated ${t} ${D.params.tz.split('/').pop().replace('_', ' ')}`
+  document.getElementById('from').value = D.params.from; document.getElementById('to').value = D.params.to
+  document.getElementById('from').max = document.getElementById('to').max = D.params.today
+}
+
+function syncControls() {
+  const custom = !!range.from
+  document.querySelectorAll('#seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.custom ? custom : !custom && Number(b.dataset.days) === range.days)))
+  document.getElementById('customWrap').hidden = !custom && !document.getElementById('customWrap').dataset.open
 }
 
 async function load(refresh = false) {
   const my = ++inflight
-  document.querySelectorAll('#seg button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.days) === days)))
+  syncControls()
   document.getElementById('stamp').textContent = 'Loading…'
+  const qs = range.from ? `from=${range.from}&to=${range.to}` : `days=${range.days}`
   try {
-    const res = await fetch(`/api/metrics?days=${days}${refresh ? '&refresh=1' : ''}`, { credentials: 'same-origin', cache: 'no-store' })
+    const res = await fetch(`/api/metrics?${qs}${refresh ? '&refresh=1' : ''}`, { credentials: 'same-origin', cache: 'no-store' })
     if (res.status === 401) return (location.href = '/login')
     const body = await res.json()
     if (my !== inflight) return
@@ -403,9 +471,16 @@ async function load(refresh = false) {
   }
 }
 
+const save = () => localStorage.setItem('qd_range', JSON.stringify(range))
 document.getElementById('seg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return
-  days = Number(b.dataset.days); localStorage.setItem('qd_days', String(days)); load()
+  if (b.dataset.custom) { const w = document.getElementById('customWrap'); w.dataset.open = w.hidden ? '1' : ''; w.hidden = !w.hidden; return }
+  range = { days: Number(b.dataset.days) }; document.getElementById('customWrap').dataset.open = ''; save(); load()
+})
+document.getElementById('apply').addEventListener('click', () => {
+  const from = document.getElementById('from').value, to = document.getElementById('to').value
+  if (!from || !to || from > to) { document.getElementById('stamp').textContent = 'Pick a start date on or before the end date'; return }
+  range = { from, to }; save(); load()
 })
 document.getElementById('refresh').addEventListener('click', () => load(true))
 load()

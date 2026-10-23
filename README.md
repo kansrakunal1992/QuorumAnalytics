@@ -12,8 +12,9 @@ One dependency (`pg`), no build step, no third-party scripts or fonts.
 | **Pulse** | Decisions, people deciding, new accounts, locked-decision rate, paid access, guest revenue, each against the previous period |
 | **Where decisions stop** | For every chat started, the furthest point it reached (chat, confirm, prediction, quick check, synthesis, lock) |
 | **Growth** | Daily decisions, people and signups; where signups came from; invites and referrals |
+| **Day by day** | One row per day: decisions, people, new people, Council, locks, chats, landing views, accounts, sign-ins, guest orders and revenue, emails, AI calls. CSV download |
 | **The front door** | Landing, start, sign-in, install, notification and Mirror events from the `events` table |
-| **Coming back** | 2nd/3rd-decision rates, DAU/WAU/MAU, weekly cohort retention, decisions per person |
+| **Coming back** | 2nd/3rd-decision rates, how soon the 2nd decision comes, DAU/WAU/MAU, weekly cohort retention, decisions per person |
 | **Inside a session** | Council vs checkpoint, chat vs classic, which advisors speak, locks, commitments, outcomes, when people decide |
 | **Features** | Who used watchlist, memory import, stakeholders, connectors, push, and so on |
 | **Revenue** | Active paid access, estimated monthly recurring revenue, guest session payments |
@@ -75,6 +76,8 @@ In Railway, open the service, then the **Variables** tab, and add:
 | `PRICE_FOUNDING_ANNUAL_INR` | No | Default `9999` |
 | `SESSION_SECRET` | No | Signs the login cookie. Defaults to a key derived from the password |
 | `CACHE_TTL_SECONDS` | No | Default `60` (the Refresh button always bypasses it) |
+| `PG_POOL_MAX` | No | Database connections, default `8` |
+| `PG_CONNECT_TIMEOUT_MS` | No | How long a query may queue for a connection, default `45000` |
 
 Do **not** set `PORT`; Railway provides it. You do **not** need any Supabase API keys or the service-role key.
 
@@ -87,6 +90,8 @@ In the service, go to **Settings, then Networking, then Generate Domain**. Open 
 `DASHBOARD_PASSWORD`. Railway redeploys automatically whenever you change a variable.
 
 Health check: `/healthz` (no login, does not touch the database).
+
+**Speed tip.** The page runs about fifty queries. If it feels slow, set the Railway service region to the one closest to your Supabase project (service Settings, then Deploy, then Region; your Supabase region is under Project Settings, General). Network distance is the main cost.
 
 ---
 
@@ -107,7 +112,7 @@ filtered by row-level security, the dashboard says so under "Data quality" rathe
 
 ## Reading the numbers
 
-- **Days** follow `DASHBOARD_TZ`. "Last 30 days" means today plus the 29 days before it, and the comparison is the 30 days before that.
+- **Days** follow `DASHBOARD_TZ`. "Last 30 days" means today plus the 29 days before it, and the comparison is the 30 days before that. Use **Custom** for any range up to 366 days ending today or earlier; the comparison is then the same number of days immediately before it. DAU/WAU/MAU always mean "as of now".
 - **A person** is a signed-in user, or a browser (device id) if they never signed in. Someone who decided anonymously
   and later signed in on the same browser counts once. Decisions with no device id and no account (visitors who
   declined functional cookies) count as decisions but cannot be counted as people; Data quality shows how many.
@@ -123,6 +128,7 @@ filtered by row-level security, the dashboard says so under "Data quality" rathe
 
 | What you see | Likely cause |
 |---|---|
+| A panel says "timeout exceeded" | The database was slow for that query. Press Refresh; if it keeps happening, move the Railway service to the same region as Supabase |
 | "Could not load the numbers" | `DATABASE_URL` is wrong, or the password has unescaped special characters. Check the Railway deploy logs |
 | A panel shows "unavailable: relation ... does not exist" | That migration has not been run in this database. Only that panel is affected |
 | Everything reads zero | The login is filtered by row-level security (see Data quality), or the project is brand new |

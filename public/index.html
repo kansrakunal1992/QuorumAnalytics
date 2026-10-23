@@ -12,8 +12,15 @@
   <div class="brand">Quorum <span>usage</span></div>
   <div class="seg" role="group" aria-label="Time window" id="seg">
     <button data-days="7" aria-pressed="false">7 days</button>
+    <button data-days="14" aria-pressed="false">14 days</button>
     <button data-days="30" aria-pressed="true">30 days</button>
     <button data-days="90" aria-pressed="false">90 days</button>
+    <button data-custom="1" aria-pressed="false">Custom</button>
+  </div>
+  <div class="custom" id="customWrap" hidden>
+    <label>From <input type="date" id="from"></label>
+    <label>To <input type="date" id="to"></label>
+    <button class="btn" id="apply" type="button">Apply</button>
   </div>
   <button class="btn" id="refresh" type="button">Refresh</button>
   <span class="stamp" id="stamp" aria-live="polite"></span>
