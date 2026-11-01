@@ -31,13 +31,13 @@ declare
   col text;
 begin
   for r in select * from (values
-    ('sessions',                  'id,user_id,device_id,created_at,status,session_depth,intake_mode,register_mode,post_decision_confidence,final_decision_locked_at,is_shared,commitment_captured_at,council_nudge_sent_at,parent_session_id,initial_instinct,optimization_priority,quorum_prediction_generated_at'),
+    ('sessions',                  'id,user_id,device_id,created_at,status,session_depth,intake_mode,register_mode,post_decision_confidence,final_decision_locked_at,is_shared,commitment_captured_at,council_nudge_sent_at,parent_session_id,initial_instinct,optimization_priority,quorum_prediction_generated_at,commitment_review_date'),
     ('messages',                  'session_id,persona,role,created_at'),
     ('chat_intakes',              'id,user_id,device_id,status,exchange_count,session_id,created_at'),
     ('examiner_responses',        'session_id'),
     ('synthesis_versions',        'session_id,version'),
     ('outcomes',                  'session_id,council_helped,created_at'),
-    ('events',                    'event,user_id,device_id,props,created_at'),
+    ('events',                    'event,user_id,device_id,session_id,props,created_at'),
     ('mirror_access',             'user_id,access_type,product_tier,expires_at,founding_member'),
     ('decision_session_payments', 'status,amount_inr,paid_at,created_at,utm_source'),
     ('user_profiles',             'user_id,signup_utm_source,signup_utm_campaign'),

@@ -106,20 +106,12 @@ const EVENT_GROUPS = [
     'install_prompt_seen', 'install_prompt_accepted', 'notification_opted_in', 'mirror_viewed']],
   ['Money', ['paid_conversion', 'mirror_unlocked']],
 ]
-const STAGES = [
-  ['st1', 'Left during the chat', 12], ['st2', 'Tapped lean and priority, did not confirm', 22],
-  ['st3', 'Confirmed the decision, left before the prediction', 34], ['st4', 'Saw the prediction, left before convening', 46],
-  ['st5', 'Passed the quick check, never saw the synthesis', 58], ['st6', 'Chose “I’m done” (skipped the Council)', null],
-  ['st7', 'Saw the synthesis, did not lock', 78], ['st8', 'Locked a decision', 100],
-]
-const stageColor = pctv => (pctv == null ? 'color-mix(in srgb, var(--amber) 60%, var(--surface))'
-  : `color-mix(in srgb, var(--accent) ${pctv}%, var(--surface))`)
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const shortDate = (iso, opts = { day: 'numeric', month: 'short' }) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { ...opts, timeZone: 'UTC' })
 const shortStamp = iso => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '–')
 
 // ── trend chart (SVG; colours come from CSS variables so dark mode just works) ─
-function trendChart(rows, lines, valueLabel = '') {
+function trendChart(rows, lines, markers = []) {
   const W = 720, H = 230, m = { l: 38, r: 10, t: 10, b: 26 }
   const iw = W - m.l - m.r, ih = H - m.t - m.b, n = rows.length
   const rawMax = Math.max(1, ...lines.flatMap(l => rows.map(r => r[l.key] || 0)))
@@ -139,6 +131,11 @@ function trendChart(rows, lines, valueLabel = '') {
     if (li === 0) root.append(s('path', { d: `${d}L${x(n - 1)},${y(0)}L${x(0)},${y(0)}Z`, fill: l.color, opacity: 0.12 }))
     root.append(s('path', { d, fill: 'none', stroke: l.color, 'stroke-width': 2, 'stroke-dasharray': l.dash || null, 'stroke-linejoin': 'round' }))
   })
+  for (const mk of markers) {   // release markers: a dashed line on the day a change went live
+    const i = rows.findIndex(r => r.day === mk.day); if (i < 0) continue
+    root.append(s('line', { x1: x(i), x2: x(i), y1: m.t, y2: m.t + ih, stroke: 'var(--amber)', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }),
+      s('text', { class: 'mk', x: Math.min(W - 6, x(i) + 4), y: m.t + 11, 'text-anchor': i > n * 0.7 ? 'end' : 'start' }, mk.label.slice(0, 26)))
+  }
   const cross = s('line', { x1: 0, x2: 0, y1: m.t, y2: m.t + ih, stroke: 'var(--muted)', 'stroke-width': 1, opacity: 0 })
   const hit = s('rect', { x: m.l, y: m.t, width: iw, height: ih, fill: 'transparent' })
   const tip = document.getElementById('tip')
@@ -174,26 +171,101 @@ function pulse(D, days) {
     tile('Guest sessions', gp ? inr(gp.amount_period) : '–', null, gp ? `${fmt(gp.n_period)} paid in ${PL}` : null))
 }
 
-function journey(D) {
-  const j = val(D.sections.journey)
-  if (!j) return section('Where decisions stop', 'How far each chat gets.', null, errBox('Journey', D.sections.journey))
-  const started = j.started
-  const legend = STAGES.map(([k, label, tone]) => h('div', { class: 'jrow' },
-    h('i', { style: { background: stageColor(tone) } }), h('span', null, label), h('b', null, fmt(j[k])), h('span', { class: 'muted' }, pct(j[k], started))))
-  return section('Where decisions stop',
-    'Every chat started in this window, grouped by the furthest point it reached.',
-    'Counts chat intakes created in the window and assigns each to exactly one stage, the furthest it reached. Chats that never became a session stop at the first two stages. The “I’m done” path is a branch, not a step before the synthesis.',
-    h('div', { class: 'journey' },
-      h('div', { class: 'stats' }, h('div', null, h('b', null, fmt(started)), h('span', null, 'chats started')),
-        h('div', null, h('b', null, j.avg_exchanges ?? '–'), h('span', null, 'average exchanges per chat'))),
-      started ? h('div', { class: 'jbar', role: 'img', 'aria-label': 'Journey stages' },
-        STAGES.map(([k, label, tone]) => j[k] ? h('div', { title: `${label}: ${fmt(j[k])}`, style: { flex: `${j[k]} 0 0`, background: stageColor(tone) } }) : null))
-        : empty('No chats started in this window.'),
-      h('div', { class: 'jlegend' }, legend),
-      h('div', { class: 'miles' },
-        [['Confirmed', j.confirmed], ['Saw the prediction', j.predicted], ['Reached the synthesis', j.synthesis], ['Locked', j.locked]].map(([l, v]) =>
-          h('div', null, h('b', null, pct(v, started)), h('span', { class: 'muted small' }, `${l} (${fmt(v)})`))))))
+// ── The journey, in plain steps ──────────────────────────────────────────────────────────────────────────────
+// Three blocks: the front door (counted in visits), each chat (counted in chats, so "% of chats started" is honest),
+// and what happens after the Council. Rows built from events say when they began counting, so a young event never reads
+// as a false zero.
+const firstSeen = D => Object.fromEntries(rowsOf(D.sections.funnel_first_seen).map(r => [r.event, r.first_at]))
+function measured(D, events) {
+  const fs = firstSeen(D); let latest = null
+  for (const e of events) { if (!fs[e]) return { state: 'none' }; if (!latest || fs[e] > latest) latest = fs[e] }
+  return new Date(latest).getTime() > new Date(D.params.from + 'T00:00:00Z').getTime() + 86_400_000 ? { state: 'partial', since: latest.slice(0, 10) } : { state: 'full' }
 }
+
+function funRow(n, title, explain, value, base, o = {}) {
+  const none = o.m && o.m.state === 'none'
+  return h('div', { class: 'fun-row' + (none ? ' nodata' : '') },
+    h('div', { class: 'fun-num' }, String(n)),
+    h('div', { class: 'fun-main' },
+      h('div', { class: 'fun-title' }, title),
+      h('div', { class: 'fun-explain' }, explain),
+      none ? h('div', { class: 'fun-badge' }, 'Not measured yet. It starts counting once the latest update is live.')
+        : o.m && o.m.state === 'partial' ? h('div', { class: 'fun-badge' }, `Measured since ${dm(o.m.since)}, so earlier days read lower than they were.`) : null,
+      o.extra ? h('div', { class: 'fun-extra' }, o.extra) : null),
+    h('div', { class: 'fun-fig' },
+      h('div', { class: 'fun-track' }, h('div', { class: 'fun-bar', style: { width: none || !base ? '0%' : `${Math.min(100, (100 * value) / base)}%` } })),
+      h('div', { class: 'fun-count' }, none ? '–' : fmt(value), none || !base ? null : h('span', { class: 'muted' }, ` ${pct(value, base)}`)),
+      o.lost > 0 && !none ? h('div', { class: 'fun-lost' }, `${fmt(o.lost)} left here`) : null))
+}
+
+function funnel(D, days) {
+  const S = D.sections, v = val(S.funnel_visits), c = val(S.funnel_chain)
+  if (!v && !c) return section('The journey, step by step', 'From the front door to a finished decision.', null, errBox('Journey', S.funnel_chain), errBox('Visits', S.funnel_visits))
+  const mm = e => measured(D, [e])
+  const parts = []
+
+  // ----- front door -----
+  if (v) {
+    const none = Math.max(0, v.consent_shown - v.consent_accepted - v.consent_rejected)
+    const vis = v.visitors_hash ? `about ${fmt(v.visitors_est)} different visitors` : `${fmt(v.visitors_est)} visitors we can recognise${v.unidentified_views ? `, plus ${fmt(v.unidentified_views)} views from people we cannot tell apart` : ''}`
+    parts.push(block('1. At the front door', 'Counted in visits to the home page. The percentage on “saw the cookie banner” is out of visits; on accepted, declined and did not answer it is out of banners shown.', h('div', { class: 'fun' },
+      funRow('a', 'Visited the home page', 'Every time someone opened Quorum. The same person can visit more than once.', v.landing_views, v.landing_views, { extra: vis }),
+      funRow('b', 'Saw the cookie banner', 'The banner asks whether Quorum may remember this browser. Without a yes, a returning visitor looks like a stranger.', v.consent_shown, v.landing_views, { m: mm('consent_shown') }),
+      funRow('c', 'Accepted cookies', 'Said yes, so Quorum can recognise them next time.', v.consent_accepted, v.consent_shown, { m: mm('consent_accepted') }),
+      funRow('d', 'Declined cookies', 'Said no. They can still use Quorum, but cannot be recognised later.', v.consent_rejected, v.consent_shown, { m: mm('consent_rejected') }),
+      funRow('e', 'Did not answer the banner', 'Carried on without choosing. Their decisions have no identity attached.', none, v.consent_shown, { m: mm('consent_shown') }))))
+  }
+
+  // ----- inside each chat -----
+  if (c) {
+    const B = c.started, mSum = mm('intake_summary_shown'), mLaunch = mm('council_launch_requested'), mGate = mm('convene_gate_shown')
+    // chats that dropped out between consecutive measured steps (the honest chain: start > confirm > convene > Council > finished)
+    const chain = [['started', 'Started a chat', B]]
+    if (mSum.state !== 'none') chain.push(['summary', 'Reached the confirm screen', c.summary])
+    if (mLaunch.state !== 'none') chain.push(['launched', 'Tapped “Convene the Council”', c.launched])
+    chain.push(['council_started', 'The Council started', c.council_started], ['finished', 'The Council finished', c.finished])
+    const lostAt = {}, drops = []
+    for (let i = 1; i < chain.length; i++) { const d = Math.max(0, chain[i - 1][2] - chain[i][2]); lostAt[chain[i][0]] = d; if (d > 0) drops.push({ from: chain[i - 1][1], to: chain[i][1], d, of: chain[i - 1][2] }) }
+    const gateExtra = c.gate ? `${fmt(c.gate_passed)} of ${fmt(c.gate)} (${pct(c.gate_passed, c.gate)}) signed in and went on to the Council.` : null
+    parts.push(block('2. Inside each chat', `Counted in chats. ${fmt(B)} chats were started in ${PL}; the percentages are out of that number.`, h('div', { class: 'fun' },
+      funRow(1, 'Started a chat', 'Typed a first message about a decision.', B, B),
+      funRow(2, 'Reached the confirm screen', 'The chat wrapped up and Quorum showed a short summary to check.', c.summary, B, { m: mSum, lost: lostAt.summary }),
+      funRow(3, 'Tapped “Convene the Council”', 'Confirmed the summary and asked the six advisors to weigh in.', c.launched, B, { m: mLaunch, lost: lostAt.launched }),
+      funRow(4, 'Reached the sign-in step', 'Asked to sign in just before the Council starts. Only people who were not already signed in see this.', c.gate, B, { m: mGate, extra: gateExtra }),
+      funRow(5, 'The Council started', 'At least one advisor began answering.', c.council_started, B, { lost: lostAt.council_started }),
+      funRow(6, 'The Council finished', 'The advisors all spoke and the summary was written.', c.finished, B, { lost: lostAt.finished }))))
+
+    // ----- after the Council -----
+    const F = Math.max(1, c.finished)
+    const rate = c.rated ? `${fmt(c.rated_yes)} yes, ${fmt(c.rated_partly)} partly, ${fmt(c.rated_no)} not really.` : null
+    parts.push(block('3. After the Council', `Counted in chats whose Council started. ${fmt(c.council_started)} in ${PL}; the percentages are out of that number.`, h('div', { class: 'fun' },
+      funRow(7, 'Pushed back on an advisor', 'Typed a reply challenging something an advisor said.', c.pushback, c.council_started),
+      funRow(8, 'Said whether it felt specific to them', 'Answered the “did this feel specific to you?” question.', c.rated, c.council_started, { m: mm('council_specificity_feedback'), extra: rate }),
+      funRow(9, 'Locked in their decision', 'Recorded what they decided.', c.locked, c.council_started),
+      funRow(10, 'Set a date to review it', 'Chose when Quorum should check back on how it went.', c.review_set, c.council_started),
+      funRow(11, 'Opened their saved Record', 'Came back to look at the saved record of the decision.', c.record_opened, c.council_started, { m: mm('record_viewed') }),
+      funRow(12, 'Recorded how it turned out', 'Came back later and said what happened.', c.outcome, c.council_started),
+      funRow(13, 'Shared the record', 'Sent the record to someone else.', c.shared, c.council_started))))
+
+    // ----- plain-language "what stands out" -----
+    const notes = []
+    if (drops.length) { const top = drops.sort((a, b) => b.d - a.d)[0]; notes.push(`The biggest drop is between “${top.from}” and “${top.to}”: ${fmt(top.d)} of ${fmt(top.of)} chats (${pct(top.d, top.of)}) stopped there.`) }
+    if (v && v.consent_shown >= 5) notes.push(`Of ${fmt(v.consent_shown)} cookie banners shown, ${pct(v.consent_accepted, v.consent_shown)} were accepted, ${pct(v.consent_rejected, v.consent_shown)} declined and ${pct(Math.max(0, v.consent_shown - v.consent_accepted - v.consent_rejected), v.consent_shown)} were never answered.`)
+    if (c.gate) notes.push(`${fmt(c.gate)} people reached the sign-in step before the Council and ${fmt(c.gate_passed)} (${pct(c.gate_passed, c.gate)}) continued.`)
+    if (c.council_started >= 5) notes.push(`Of ${fmt(c.council_started)} Councils that started, ${pct(c.pushback, c.council_started)} drew a pushback, ${pct(c.locked, c.council_started)} were locked in, and ${pct(c.review_set, c.council_started)} had a review date set.`)
+    if (notes.length) parts.unshift(h('div', { class: 'stands' }, h('h3', null, 'What stands out'), h('ul', null, notes.map(t => h('li', null, t)))))
+  }
+
+  return section('The journey, step by step', `Where people enter, and how far they get, for ${PL}.`,
+    'Read it top to bottom. Block 1 counts visits to the home page. Blocks 2 and 3 follow each chat, so “% of chats” always means “out of the chats started” (block 2) or “out of the Councils that started” (block 3). Rows marked “not measured yet” or “measured since” depend on newer tracking, so older days read lower than they really were. Steps from the database (Council started, finished, locked) are counted for all history.',
+    h('details', { class: 'words' }, h('summary', null, 'Words used here'),
+      h('p', null, h('b', null, 'Chat: '), 'the conversation where someone describes a decision. ', h('b', null, 'Confirm screen: '), 'the short summary shown at the end of the chat. ',
+        h('b', null, 'Council: '), 'six advisors who each respond to the decision. ', h('b', null, 'Pushback: '), 'when the person replies to challenge an advisor. ',
+        h('b', null, 'Record: '), 'the saved page for a decision. ', h('b', null, 'Cookies: '), 'a small marker that lets Quorum recognise a returning browser.')),
+    ...parts)
+}
+
+const markerRows = D => (D.markers || []).filter(m => m.date >= D.params.from && m.date <= D.params.to).map(m => ({ day: m.date, label: m.label }))
 
 function growth(D, days) {
   const S = D.sections, daily = rowsOf(S.daily), ev = rowsOf(S.events_daily), su = val(S.signups)
@@ -203,7 +275,7 @@ function growth(D, days) {
   const utm = rowsOf(S.acq_utm), inv = val(S.acq_invites), ref = val(S.acq_referrals), vc = val(S.visitor_counter)
   return section('Growth', `Day by day for ${PL}.`,
     `Days follow the ${D.params.tz} timezone. A “person” is a signed-in user, or a browser (device id) if they never signed in; if someone decided anonymously and later signed in on the same browser they count once. Decisions made without a device id or account (cookie consent declined) are counted as decisions but not as people.`,
-    block('Decisions, people and accounts', null, S.daily?.ok ? trendChart(merged, lines) : errBox('Daily series', S.daily)),
+    block('Decisions, people and accounts', D.markers && D.markers.length ? 'Dashed lines mark releases (set in RELEASE_MARKERS).' : null, S.daily?.ok ? trendChart(merged, lines, markerRows(D)) : errBox('Daily series', S.daily)),
     h('div', { class: 'cols' },
       block('How people signed up', `Accounts created in ${PL}.`,
         su ? splitBar([{ label: 'Google', value: su.google_period }, { label: 'Magic link', value: su.magic_link_period }]) : errBox('Signups', S.signups)),
@@ -225,6 +297,7 @@ const DAILY_COLS = [
   { key: 'landing', src: 'events_daily', label: 'Landing views' }, { key: 'started', src: 'events_daily', label: 'Decisions started' },
   { key: 'signups', src: 'daily', label: 'New accounts' }, { key: 'sign_ins', src: 'events_daily', label: 'Sign-ins' }, { key: 'returns', src: 'events_daily', label: 'Return visits' },
   { key: 'orders', src: 'money_daily', label: 'Guest orders' }, { key: 'paid', src: 'money_daily', label: 'Guest paid' }, { key: 'revenue', src: 'money_daily', label: 'Guest ₹', money: true },
+  { key: 'launched', src: 'events_daily', label: 'Convene taps' }, { key: 'gate_shown', src: 'events_daily', label: 'Sign-in step shown' }, { key: 'council_started', src: 'events_daily', label: 'Council started' },
   { key: 'paid_conv', src: 'events_daily', label: 'Paid conversions' }, { key: 'emails', src: 'emails_daily', label: 'Emails' }, { key: 'calls', src: 'ai_daily', label: 'AI calls' },
 ]
 
@@ -244,6 +317,27 @@ function downloadCsv(D, rows) {
 }
 const S_OK = (D, src) => !!(D.sections[src] && D.sections[src].ok)
 
+function releaseCheck(D) {
+  const marks = D.markers || []
+  if (!marks.length) return block('Before and after a release', null, empty('Add RELEASE_MARKERS in Railway (for example 2026-11-04:Sign-in before Council) to compare the days before and after a change.'))
+  const rows = dailyRows(D)
+  const blocks = marks.map(mk => {
+    const before = rows.filter(r => r.day < mk.date), after = rows.filter(r => r.day >= mk.date)
+    if (before.length < 3 || after.length < 3) return h('div', { class: 'empty' }, `${mk.label} (${dm(mk.date)}): pick a date range with at least 3 days on each side of this date to compare.`)
+    const sum = (a, k) => a.reduce((t, r) => t + (Number(r[k]) || 0), 0)
+    const per = (a, k) => (sum(a, k) / a.length).toFixed(1)
+    const ratio = (a, n, d) => (sum(a, d) ? `${Math.round((100 * sum(a, n)) / sum(a, d))}%` : '–')
+    return h('div', null, h('p', { class: 'sub' }, `${mk.label}, live from ${dm(mk.date)}. ${before.length} days before, ${after.length} days after.`),
+      table(['', 'Before', 'After'], [
+        ['Chats started per day', per(before, 'chats'), per(after, 'chats')],
+        ['Convene taps per day', per(before, 'launched'), per(after, 'launched')],
+        ['Councils started, out of Convene taps', ratio(before, 'council_started', 'launched'), ratio(after, 'council_started', 'launched')],
+        ['Reached the sign-in step, out of Convene taps', ratio(before, 'gate_shown', 'launched'), ratio(after, 'gate_shown', 'launched')],
+        ['New accounts per day', per(before, 'signups'), per(after, 'signups')]], [1, 2]))
+  })
+  return block('Before and after a release', 'Small numbers move around a lot, so read this as a direction, not proof.', ...blocks)
+}
+
 function daily(D) {
   const rows = dailyRows(D), failed = [...new Set(DAILY_COLS.map(c => c.src))].filter(src => !S_OK(D, src))
   const maxDec = Math.max(1, ...rows.map(r => r.sessions || 0))
@@ -257,6 +351,7 @@ function daily(D) {
   const newest = [...rows].reverse()
   return section('Day by day', `Every day in ${PL}, newest first.`,
     `Days follow ${D.params.tz}. Each column is the sum for that calendar day. People is the number of distinct people deciding that day, so it is not added up in the total row (the same person on two days counts twice). Chats and decisions start from different tables, so they differ slightly. The first row of totals matches the numbers at the top of the page.`,
+    releaseCheck(D),
     h('div', { class: 'blk' },
       h('div', { class: 'rowhead' }, h('p', { class: 'sub' }, `${rows.length} days. Zeros show as a dot.`), h('button', { class: 'btn', type: 'button', onclick: () => downloadCsv(D, rows) }, 'Download CSV')),
       rows.length ? h('div', { class: 'daily' }, h('div', { class: 'scrollbox' }, h('table', null,
@@ -264,7 +359,7 @@ function daily(D) {
         h('tbody', null,
           h('tr', { class: 'tot' }, h('td', null, 'Total'), DAILY_COLS.map(c => h('td', { class: 'num' }, !S_OK(D, c.src) ? '–' : c.noTotal ? '' : c.money ? inr(tot(c.key)) : fmt(tot(c.key))))),
           newest.map(r => h('tr', { class: r.day === D.params.today ? 'today' : null },
-            h('td', null, shortDate(r.day, { weekday: 'short', day: 'numeric', month: 'short' }), r.day === D.params.today ? h('span', { class: 'muted' }, ' (so far)') : null),
+            h('td', null, shortDate(r.day, { weekday: 'short', day: 'numeric', month: 'short' }), r.day === D.params.today ? h('span', { class: 'muted' }, ' (so far)') : null, (D.markers || []).filter(m => m.date === r.day).map(m => h('span', { class: 'chip rel' }, m.label.slice(0, 18)))),
             DAILY_COLS.map(c => cell(r, c)))))))) : empty('No data.'),
       failed.length ? h('p', { class: 'small muted' }, `Some columns are blank because these sources could not load: ${failed.join(', ')}.`) : null))
 }
@@ -353,6 +448,65 @@ function inside(D, days) {
     block('When people decide', `Weekday and hour in ${D.params.tz}, last 90 days. Darker means more decisions.`, S.heatmap?.ok ? heatmap(rowsOf(S.heatmap)) : errBox('Heat map', S.heatmap)))
 }
 
+
+// ── Who arrives, and on what ──────────────────────────────────────────────────────────────────────────────────
+const DEVICE_LABELS = { ios: 'iPhone / iPad', android: 'Android', desktop: 'Computer', other: 'Other', unknown: 'Not recorded' }
+const INAPP_LABELS = { none: 'Normal browser', instagram: 'Instagram app', facebook: 'Facebook app', whatsapp: 'WhatsApp', linkedin: 'LinkedIn app', twitter: 'X / Twitter app', other_webview: 'Another app', unknown: 'Not recorded' }
+
+function arrivals(D, days) {
+  const S = D.sections, ch = rowsOf(S.channels), dv = rowsOf(S.devices), v = val(S.funnel_visits)
+  const tagged = ch.some(r => r.source !== 'direct / unknown'), recorded = dv.some(r => r.device !== 'unknown')
+  const inShare = v && v.landing_views ? v.in_app_views / v.landing_views : 0
+  const googleInApp = dv.filter(r => r.in_app !== 'none' && r.in_app !== 'unknown').reduce((a, r) => a + r.google_tries, 0)
+  return section('Who arrives, and on what', `Which channels bring people and which phones and apps they use, for ${PL}.`,
+    'Source is the campaign tag on the link (utm_source) or, if there is none, the website that sent the visitor. “direct / unknown” means neither. Device and app come from the browser itself; only a coarse category is kept, never the raw browser string. Apps such as Instagram and Facebook open links in their own mini-browser, where Google sign-in is blocked.',
+    block('Where visitors come from', 'The first campaign tag or referring website seen for each visit.',
+      S.channels?.ok ? (ch.length ? table(['Source', 'Visits', 'Started a decision', 'Reached sign-in step', 'Saw a paywall', 'Paid'],
+        ch.map(r => [r.source, fmt(r.views), `${fmt(r.started)}${r.views ? ` (${pct(r.started, r.views)})` : ''}`, fmt(r.gate), fmt(r.paywall), fmt(r.paid)]), [1, 2, 3, 4, 5]) : empty('Not measured yet. Sources appear once the latest update is live.')) : errBox('Channels', S.channels),
+      S.channels?.ok && ch.length && !tagged ? h('p', { class: 'small muted' }, 'No campaign tags yet. Add ?utm_source=... to the links you share so each channel shows up here.') : null),
+    block('Which phones and apps', 'Visits by device and the app they were opened in.',
+      S.devices?.ok ? (dv.length && recorded ? h('div', null,
+        inShare >= 0.05 ? h('div', { class: 'stands' }, h('ul', null, h('li', null, `${pct(v.in_app_views, v.landing_views)} of visits were opened inside another app (Instagram, Facebook, WhatsApp and similar). Google sign-in is blocked there, so people see an email option instead.${googleInApp ? ` ${fmt(googleInApp)} still tried Google from inside an app.` : ''}`))) : null,
+        table(['Device', 'Opened in', 'Visits', 'Started a decision', 'Reached sign-in step', 'Tried Google', 'Tried email'],
+          dv.map(r => [DEVICE_LABELS[r.device] || r.device, INAPP_LABELS[r.in_app] || r.in_app, fmt(r.views), fmt(r.started), fmt(r.gate), fmt(r.google_tries), fmt(r.email_tries)]), [2, 3, 4, 5, 6])) : empty('Not measured yet. This appears once the latest update is live.')) : errBox('Devices', S.devices)))
+}
+
+// ── Sign-in ───────────────────────────────────────────────────────────────────────────────────────────────────
+const STAGE_LABELS = { convene_gate: 'Before the Council starts (required)', d1_soft: 'After the first decision (optional)', d2_earned: 'After a few decisions (optional)', d3_gate: 'Before another decision (required)', post_decision: 'After a decision' }
+
+function signin(D, days) {
+  const S = D.sections, g = rowsOf(S.gate_outcome), pr = rowsOf(S.signin_prompts)
+  const shown = sum(g, 'shown'), cont = sum(g, 'continued')
+  return section('Sign-in', `Whether people are willing to sign in, for ${PL}.`,
+    'The sign-in step appears on the Council page, only for someone who is not signed in and whose Council has not started yet. “Continued” means at least one advisor then answered, which can only happen after signing in. Prompts across the app are matched to the same person by account or browser, so people who never accepted cookies cannot be followed and are not counted as finishing.',
+    block('The sign-in step before the Council', 'The newest step. It is on by default and can be switched off with NEXT_PUBLIC_CONVENE_GATE=off.',
+      S.gate_outcome?.ok ? (shown ? h('div', null, stats([{ v: fmt(shown), l: 'reached the sign-in step' }, { v: pct(cont, shown), l: `signed in and went on to the Council (${fmt(cont)})` }, { v: fmt(shown - cont), l: 'left without signing in' }]),
+        h('div', { style: { height: '14px' } }),
+        table(['Opened in', 'Reached it', 'Continued', 'Share who continued'], g.map(r => [INAPP_LABELS[r.in_app] || r.in_app, fmt(r.shown), fmt(r.continued), pct(r.continued, r.shown)]), [1, 2, 3])) : empty('Nobody has reached the sign-in step in this period. It appears once the latest update is live.')) : errBox('Sign-in step', S.gate_outcome)),
+    block('Every sign-in prompt in the app', 'Where a sign-in card was shown, and how many of the people who saw it started and finished.',
+      S.signin_prompts?.ok ? (pr.length ? table(['Where it was shown', 'People who saw it', 'Started signing in', 'Finished', 'Started of saw', 'Finished of saw'],
+        pr.map(r => [STAGE_LABELS[r.stage] || r.stage, fmt(r.seen), fmt(r.started), fmt(r.signed_in), pct(r.started, r.seen), pct(r.signed_in, r.seen)]), [1, 2, 3, 4, 5]) : empty('No sign-in prompts recorded in this period.')) : errBox('Sign-in prompts', S.signin_prompts)))
+}
+
+// ── Speed and errors ──────────────────────────────────────────────────────────────────────────────────────────
+const WHERE_LABELS = { chat_turn: 'A chat reply', council_advisor: 'A Council advisor', outcome_save: 'Saving how it turned out', payment_create: 'Starting a payment', payment_script: 'Loading the payment window' }
+const KIND_LABELS = { ai_error: 'Server error', rate_limited: 'Too many requests', network: 'No connection', payment_failed: 'Payment failed', other: 'Other' }
+const secs = ms => (ms == null ? '–' : ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`)
+
+function reliability(D, days) {
+  const S = D.sections, lat = val(S.latency), errs = rowsOf(S.client_errors)
+  const hasLat = lat && (lat.api_n || lat.convene_n || lat.confirm_n)
+  return section('Speed and errors', `How long people wait, and what went wrong, for ${PL}.`,
+    'Waits are measured from the person’s side: from sending a message to the reply appearing. “Convene to first advisor” skips anyone who was asked to sign in, so it measures the AI, not the sign-in. Errors are failures the person experienced; each kind is capped per visit so a retry loop cannot flood the count. Both start counting once the latest update is live.',
+    block('How long people wait', null,
+      S.latency?.ok ? (hasLat ? stats([
+        lat.api_n ? { v: secs(lat.api_p50 == null ? null : Number(lat.api_p50)), l: `typical wait for a chat reply (slowest 1 in 20: ${secs(Number(lat.api_p95))}, ${fmt(lat.api_n)} replies)` } : null,
+        lat.convene_n ? { v: secs(lat.convene_p50 == null ? null : Number(lat.convene_p50) * 1000), l: `typical wait from “Convene” to the first advisor (slowest 1 in 20: ${secs(Number(lat.convene_p95) * 1000)}, ${fmt(lat.convene_n)} Councils)` } : null,
+        lat.confirm_n ? { v: secs(Number(lat.confirm_p50)), l: `typical time spent on the confirm screen (${fmt(lat.confirm_n)} people)` } : null]) : empty('Not measured yet. This appears once the latest update is live.')) : errBox('Speed', S.latency)),
+    block('What went wrong', 'Failures people ran into, most common first.',
+      S.client_errors?.ok ? (errs.length ? table(['Where', 'What happened', 'Times', 'People or visits affected'], errs.map(r => [WHERE_LABELS[r.place] || r.place, KIND_LABELS[r.kind] || r.kind, fmt(r.n), fmt(r.affected)]), [2, 3]) : empty('No errors recorded in this period. That is good news, or tracking has not started yet.')) : errBox('Errors', S.client_errors)))
+}
+
 function features(D, days) {
   const rows = D.features
   const max = Math.max(1, ...rows.filter(r => r.ok).map(r => r.data.people_period))
@@ -385,19 +539,33 @@ function revenue(D, days) {
           h('div', { style: { height: '12px' } }), table(['Status', 'Orders', 'This period'], gp.map(r => [cap(r.status), fmt(r.n), fmt(r.n_period)]), [1, 2])) : empty('No guest orders yet.')) : errBox('Guest payments', S.guest_payments)),
       block('Guest orders by source', 'UTM source on the order.',
         S.guest_by_source?.ok ? (src.length ? table(['Source', 'Orders', 'Paid'], src.map(r => [r.src, fmt(r.orders), fmt(r.paid)]), [1, 2]) : empty('None yet.')) : errBox('Sources', S.guest_by_source))),
-    bd.length ? block('New paid conversions', `From events in ${PL}.`, barRows(bd.map(r => ({ label: cap(r.k), value: r.n })))) : null)
+    bd.length ? block('New paid conversions', `From events in ${PL}.`, barRows(bd.map(r => ({ label: cap(r.k), value: r.n })))) : null,
+    (() => { const py = rowsOf(S.payments), fail = bd0(D, 'payment_failed')
+      return block('From paywall to payment', `People who saw a paid plan, opened checkout and paid, for ${PL}.`,
+        S.payments?.ok ? (py.length ? h('div', null, table(['Plan', 'Saw the plan', 'Opened checkout', 'Closed it without paying', 'Payment failed', 'Paid'], py.map(r => [cap(r.plan), fmt(r.viewed), `${fmt(r.opened)}${r.viewed ? ` (${pct(r.opened, r.viewed)})` : ''}`, fmt(r.dismissed), fmt(r.failed), fmt(r.success)]), [1, 2, 3, 4, 5]),
+          fail.length ? h('p', { class: 'small muted' }, 'Why payments failed: ' + fail.map(r => `${r.k} (${fmt(r.n)})`).join(', ')) : null) : empty('Not measured yet. This appears once the latest update is live.')) : errBox('Payments', S.payments)) })(),
+    (() => { const go = rowsOf(S.guest_orders), created = go.filter(r => r.event === 'guest_order_created'), paid = go.filter(r => r.event === 'guest_order_paid')
+      return block('Guest orders: pressed pay, or created automatically?', 'From the page that sells the ₹299 session. “unknown” means that page is not yet telling us (it should send trigger: click or load).',
+        S.guest_orders?.ok ? (go.length ? h('div', null, table(['Source', 'How the order was created', 'Orders created'], created.map(r => [r.src, r.trigger === 'click' ? 'Pressed the pay button' : r.trigger === 'load' ? 'Created when the page loaded' : 'Unknown', fmt(r.n)]), [2]),
+          paid.length ? h('p', { class: 'small muted' }, 'Paid orders by source: ' + paid.map(r => `${r.src} (${fmt(r.n)})`).join(', ')) : null) : empty('Not measured yet. This appears once the latest update is live.')) : errBox('Guest orders', S.guest_orders)) })())
 }
+const bd0 = (D, ev) => rowsOf(D.sections.events_breakdown).filter(r => r.event === ev)
 
 function lifecycle(D, days) {
   const S = D.sections, sent = rowsOf(S.notif_sent), bd = rowsOf(S.events_breakdown), emails = rowsOf(S.email_sent), pf = val(S.prefs), cad = rowsOf(S.cadence)
   const fromEv = ev => Object.fromEntries(bd.filter(r => r.event === ev).map(r => [r.k, r.n]))
   const opened = fromEv('notification_opened'), toDec = fromEv('notification_to_decision'), sentBy = Object.fromEntries(sent.map(r => [r.source, r.sent]))
-  const sources = [...new Set([...Object.keys(sentBy), ...Object.keys(opened), ...Object.keys(toDec)])].filter(k => k !== '(none)')
+  // the reminder emails live in the email log; their type matches the tag on their link (the review-date email is tagged review_date)
+  for (const r of emails) { const k = r.email_type === 'reanalyze_review_date' ? 'review_date' : r.email_type; sentBy[k] = (sentBy[k] || 0) + r.sent }
+  const outcomes = Object.fromEntries(rowsOf(S.outcome_sources).map(r => [r.source, r.n]))
+  const returns = bd.filter(r => r.event === 'return_visit' && r.k !== '(none)')
+  const sources = [...new Set([...Object.keys(sentBy), ...Object.keys(opened), ...Object.keys(toDec), ...Object.keys(outcomes).filter(k => !k.startsWith('('))])].filter(k => k !== '(none)')
   return section('Nudges and email', `Messages sent and what they led to, for ${PL}.`,
     'Sent comes from the notification log; opened and decided come from events when a visit arrives from a tagged link, so some sources (for example review-date emails) show opens without a sent count, and untagged links show sent only.',
     block('From message to decision', null,
-      S.notif_sent?.ok ? (sources.length ? table(['Source', 'Sent', 'Opened', 'Then decided', 'Opened of sent', 'Decided of opened'],
-        sources.map(k => [k.replaceAll('_', ' '), fmt(sentBy[k]), fmt(opened[k]), fmt(toDec[k]), sentBy[k] && opened[k] ? pct(opened[k], sentBy[k], 1) : '–', opened[k] && toDec[k] ? pct(toDec[k], opened[k]) : '–']), [1, 2, 3, 4, 5]) : empty('Nothing sent in this window.')) : errBox('Notifications', S.notif_sent)),
+      S.notif_sent?.ok ? (sources.length ? table(['Email', 'Sent', 'Opened', 'Then made a decision', 'Then recorded an outcome', 'Opened of sent'],
+        sources.map(k => [k.replaceAll('_', ' '), fmt(sentBy[k]), fmt(opened[k]), fmt(toDec[k]), fmt(outcomes[k]), sentBy[k] && opened[k] ? pct(opened[k], sentBy[k], 1) : '–']), [1, 2, 3, 4, 5]) : empty('Nothing sent in this window.')) : errBox('Notifications', S.notif_sent),
+      returns.length ? h('p', { class: 'small muted' }, 'Return visits that came from an email: ' + returns.map(r => `${r.k.replaceAll('_', ' ')} (${fmt(r.n)})`).join(', ')) : null),
     h('div', { class: 'cols' },
       block('Other email', 'From the email log.', S.email_sent?.ok ? (emails.length ? barRows(emails.map(r => ({ label: r.email_type.replaceAll('_', ' '), value: r.sent }))) : empty('None in this window.')) : errBox('Email log', S.email_sent)),
       block('Habit and opt-outs', pf ? `${fmt(pf.total)} people have preferences saved.` : null,
@@ -438,7 +606,7 @@ let inflight = 0
 function render(D) {
   const days = D.params.days
   PL = D.params.custom ? `the period ${dm(D.params.from)} to ${dm(D.params.to)}` : `the last ${days} days`
-  app.replaceChildren(pulse(D, days), journey(D), growth(D, days), daily(D), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), platform(D, days))
+  app.replaceChildren(pulse(D, days), funnel(D, days), arrivals(D, days), growth(D, days), daily(D), signin(D, days), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), reliability(D, days), platform(D, days))
   const t = new Date(D.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: D.params.tz })
   document.getElementById('stamp').textContent = `Updated ${t} ${D.params.tz.split('/').pop().replace('_', ' ')}`
   document.getElementById('from').value = D.params.from; document.getElementById('to').value = D.params.to

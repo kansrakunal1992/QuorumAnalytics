@@ -9,9 +9,12 @@ One dependency (`pg`), no build step, no third-party scripts or fonts.
 
 | Section | Answers |
 |---|---|
+| **The journey, step by step** | The plain-language funnel: visits, cookie banner (shown, accepted, declined, ignored), each chat (started, confirm screen, Convene, sign-in step, Council started and finished) and after the Council (pushback, felt specific, locked, review date, Record opened, outcome, shared), with where people left |
 | **Pulse** | Decisions, people deciding, new accounts, locked-decision rate, paid access, guest revenue, each against the previous period |
 | **Where decisions stop** | For every chat started, the furthest point it reached (chat, confirm, prediction, quick check, synthesis, lock) |
+| **Who arrives, and on what** | Visits by campaign source and referring site, and by phone, computer and app (Instagram, Facebook and similar in-app browsers) |
 | **Growth** | Daily decisions, people and signups; where signups came from; invites and referrals |
+| **Sign-in** | The sign-in step before the Council (how many reached it and continued, split by browser) and every sign-in prompt in the app |
 | **Day by day** | One row per day: decisions, people, new people, Council, locks, chats, landing views, accounts, sign-ins, guest orders and revenue, emails, AI calls. CSV download |
 | **The front door** | Landing, start, sign-in, install, notification and Mirror events from the `events` table |
 | **Coming back** | 2nd/3rd-decision rates, how soon the 2nd decision comes, DAU/WAU/MAU, weekly cohort retention, decisions per person |
@@ -19,6 +22,7 @@ One dependency (`pg`), no build step, no third-party scripts or fonts.
 | **Features** | Who used watchlist, memory import, stakeholders, connectors, push, and so on |
 | **Revenue** | Active paid access, estimated monthly recurring revenue, guest session payments |
 | **Nudges and email** | Sent, opened, led to a decision; opt-out rates |
+| **Speed and errors** | Typical wait for a chat reply and for the first advisor, and the failures people ran into |
 | **Platform and data health** | Model routing, institutions, and a list of any panel that could not load |
 
 **Privacy.** Every query is an aggregate (counts and dates). The dashboard never selects decision text,
@@ -75,6 +79,7 @@ In Railway, open the service, then the **Variables** tab, and add:
 | `PRICE_FOUNDING_MONTHLY_INR` | No | Default `999` |
 | `PRICE_FOUNDING_ANNUAL_INR` | No | Default `9999` |
 | `SESSION_SECRET` | No | Signs the login cookie. Defaults to a key derived from the password |
+| `RELEASE_MARKERS` | No | Dated changes to compare around, for example `2026-11-04:Sign-in before Council,2026-10-24:Shorter journey`. Draws dashed lines on the charts and fills the before/after check in Day by day |
 | `CACHE_TTL_SECONDS` | No | Default `60` (the Refresh button always bypasses it) |
 | `PG_POOL_MAX` | No | Database connections, default `8` |
 | `PG_CONNECT_TIMEOUT_MS` | No | How long a query may queue for a connection, default `45000` |

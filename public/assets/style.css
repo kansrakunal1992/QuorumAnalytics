@@ -156,3 +156,30 @@ tr:last-child td { border-bottom: 0; }
 .mini { display: inline-block; width: 46px; height: 6px; background: var(--accent-soft); border-radius: 2px; margin-left: 8px; vertical-align: middle; overflow: hidden; }
 .mini i { display: block; height: 100%; background: var(--accent); }
 .rowhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+
+/* the journey in plain steps */
+.fun { display: grid; gap: 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.fun-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) minmax(210px, 34%); gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--rule); align-items: start; }
+.fun-row:last-child { border-bottom: 0; }
+.fun-row.nodata { opacity: .62; }
+.fun-num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font: 600 13px var(--sans); display: grid; place-items: center; margin-top: 1px; }
+.fun-title { font-weight: 600; font-size: 15px; }
+.fun-explain { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.fun-extra { font-size: 13px; margin-top: 6px; color: var(--ink); }
+.fun-badge { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); border-radius: 99px; padding: 1px 9px; }
+.fun-track { height: 12px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
+.fun-bar { height: 100%; background: var(--accent); border-radius: 4px; min-width: 2px; transition: width .3s; }
+.fun-count { font: 400 26px/1.1 var(--serif); margin-top: 6px; }
+.fun-count .muted { font: 400 14px var(--sans); }
+.fun-lost { margin-top: 4px; font-size: 12.5px; color: var(--neg); font-weight: 500; }
+.stands { border-left: 3px solid var(--amber); background: var(--surface); padding: 12px 18px; border-radius: 0 8px 8px 0; }
+.stands h3 { font-size: 16px; margin-bottom: 4px; }
+.stands ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.words { font-size: 13px; color: var(--muted); }
+.words p { margin: 6px 0 0; line-height: 1.6; }
+.chart text.mk { fill: var(--amber); font-size: 11px; }
+.chip.rel { margin-left: 8px; color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+@media (max-width: 860px) {
+  .fun-row { grid-template-columns: 30px minmax(0, 1fr); }
+  .fun-fig { grid-column: 2; }
+}
