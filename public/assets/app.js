@@ -198,6 +198,78 @@ function funRow(n, title, explain, value, base, o = {}) {
       o.lost > 0 && !none ? h('div', { class: 'fun-lost' }, `${fmt(o.lost)} left here`) : null))
 }
 
+
+// ── Where people drop off ────────────────────────────────────────────────────────────────────────────────────
+// Answers one question: at which step do we lose the most people? Block 1 is the home page (visitors who never start a
+// decision). Block 2 ranks the steps AFTER they start, so the biggest leak is compared like with like. A step needs at
+// least MIN_N people entering before it is allowed to be called the biggest leak.
+const MIN_N = 15
+function dropoff(D, days) {
+  const S = D.sections, v = val(S.funnel_visits), c = val(S.funnel_chain), g = rowsOf(S.gate_outcome)
+  if (!v || !c) return null
+  const hash = v.visitors_hash > 0
+  const visits = hash ? v.visitors_hash : v.landing_views
+  const visitsWord = hash ? 'different visitors' : 'visits'
+  const mLanding = measured(D, ['landing_view']), mSum = measured(D, ['intake_summary_shown']), mLaunch = measured(D, ['council_launch_requested'])
+  const bothNone = mSum.state === 'none' && mLaunch.state === 'none'   // neither confirm-screen event exists yet: those two steps cannot be told apart
+  const confirmN = mSum.state === 'none' ? c.saved : c.summary
+  const launchN = mLaunch.state === 'none' ? c.saved : c.launched
+  const gateShown = sum(g, 'shown'), gatePassed = sum(g, 'continued')
+
+  const steps = [
+    { name: 'The chat', ask: 'Did they finish telling Quorum about the decision?', enter: c.started, stay: confirmN,
+      left: bothNone ? 'did not get as far as pressing Convene (the confirm screen is not measured yet, so this step and the next are combined)' : 'left before the confirm screen',
+      means: 'They typed a first message but gave up before the summary appeared.',
+      tries: 'Look at how long each reply takes (see Speed and errors), how many questions are asked, and where chats stop.' },
+    { name: 'The confirm screen', ask: 'Did they press “Convene the Council”?', enter: confirmN, stay: launchN, left: 'saw the summary but did not convene', notMeasured: bothNone,
+      means: 'The chat worked, but the summary or the button did not convince them.',
+      tries: 'Check the summary reads as correct and personal, and that the Convene button is obvious. Time spent on this screen is in Speed and errors.' },
+    { name: 'Convene and sign-in', ask: 'Did the Council start after they pressed Convene?', enter: launchN, stay: c.council_started, left: 'pressed Convene but the Council never started',
+      means: 'This is where the required sign-in sits. Look at how many reached the sign-in step and how many continued.',
+      tries: gateShown ? `Of ${fmt(gateShown)} who reached the sign-in step, ${fmt(gatePassed)} (${pct(gatePassed, gateShown)}) continued. Also check errors for failed advisors.` : 'No one has reached the sign-in step yet in this period. Also check errors for failed advisors.' },
+    { name: 'The Council', ask: 'Did the Council finish?', enter: c.council_started, stay: c.finished, left: 'started but did not finish',
+      means: 'Advisors were slow, failed, or the person left while waiting.',
+      tries: 'Check Speed and errors for advisor failures and the wait to the first advisor.' },
+    { name: 'After the Council', ask: 'Did they lock in their decision?', enter: c.finished, stay: c.locked, left: 'finished the Council but did not lock a decision',
+      means: 'They read the result but did not commit. Review dates and outcomes are counted separately below.',
+      tries: `${fmt(c.review_set)} set a review date, ${fmt(c.record_opened)} opened their Record and ${fmt(c.outcome)} recorded an outcome. Look at what the lock and review prompts say.` },
+  ].map(r => ({ ...r, gone: Math.max(0, r.enter - r.stay), share: r.enter ? Math.max(0, r.enter - r.stay) / r.enter : 0, ok: r.enter >= MIN_N && !r.notMeasured }))
+  const ranked = steps.filter(r => r.ok && r.gone > 0).sort((a, b) => b.share - a.share)
+  const worst = ranked[0] || null
+
+  const row = (n, r, isLanding) => h('div', { class: 'fun-row leak' + (r.ok || isLanding ? '' : ' nodata') },
+    h('div', { class: 'fun-num' }, String(n)),
+    h('div', { class: 'fun-main' },
+      h('div', { class: 'fun-title' }, r.name, worst && r === worst ? h('span', { class: 'chip bad' }, 'Biggest leak') : null, !r.ok && !isLanding ? h('span', { class: 'chip' }, r.notMeasured ? 'Not measured yet' : `Too few to judge (${fmt(r.enter)})`) : null),
+      h('div', { class: 'fun-explain' }, r.ask),
+      h('div', { class: 'fun-extra' }, r.means),
+      h('div', { class: 'fun-explain', style: { marginTop: '4px' } }, h('b', null, 'To look at: '), r.tries)),
+    h('div', { class: 'fun-fig' },
+      h('div', { class: 'fun-track neg' }, h('div', { class: 'fun-bar neg', style: { width: `${Math.min(100, Math.round(100 * r.share))}%` } })),
+      h('div', { class: 'fun-count' }, r.notMeasured || !r.enter ? '–' : pct(r.gone, r.enter), r.notMeasured ? null : h('span', { class: 'muted' }, ' left here')),
+      r.notMeasured ? h('div', { class: 'muted small' }, 'Starts counting once the latest update is live.') : h('div', { class: 'muted small' }, `${fmt(r.gone)} of ${fmt(r.enter)} ${r.left}`)))
+
+  // block 1: home page
+  const started = c.started
+  const startRate = visits ? started / visits : 0
+  const land = { name: 'The home page', ask: 'Did visitors start a decision at all?', enter: visits, stay: started, gone: Math.max(0, visits - started), share: visits ? Math.max(0, visits - started) / visits : 0, ok: true,
+    left: `${visitsWord} never typed a first message`,
+    means: visits ? `${fmt(started)} chats were started from ${fmt(visits)} ${visitsWord}: about ${Math.round(100 * startRate)} in every 100 start one. If one channel starts far more than the others (see Who arrives, and on what), the home page is fine and the audience is what differs. If every channel is low, the page is not making clear what to do.`
+      : 'No visits recorded in this period.',
+    tries: 'Compare start rates by channel, then look at the headline, the example prompts and whether the input box is visible without scrolling on a phone.' }
+  const per100 = n => (started ? Math.round((100 * n) / started) : 0)
+  const summary = started >= 1 ? `Of every 100 chats started, about ${per100(confirmN)} reach the confirm screen, ${per100(c.council_started)} get a Council and ${per100(c.locked)} lock in a decision.` : null
+
+  return section('Where people drop off', `Which step loses the most people, for ${PL}.`,
+    `Block 1 divides chats started by ${hash ? 'distinct visitors (the daily visitor token is on)' : 'home page visits (a visit is not a person; turn on VISITOR_HASH_SECRET to count visitors)'}. Block 2 follows only people who started a chat, so each step is compared with the one before it. A step is only called the biggest leak once at least ${MIN_N} people entered it, because a handful of people can swing a percentage wildly. Steps that depend on newer tracking use the earlier count when the newer event is not measured yet. Testing by your own accounts is excluded.`,
+    worst ? h('div', { class: 'stands' }, h('h3', null, 'The biggest leak right now'),
+      h('ul', null, h('li', null, `${worst.name}: ${pct(worst.gone, worst.enter)} of the people who got there stopped (${fmt(worst.gone)} of ${fmt(worst.enter)} ${worst.left}).`), summary ? h('li', null, summary) : null))
+      : h('div', { class: 'stands' }, h('h3', null, 'Too few people to name a biggest leak yet'),
+        h('ul', null, h('li', null, `No step has had ${MIN_N} people enter it in this period. Widen the date range, or wait for more visitors.`), summary ? h('li', null, summary) : null)),
+    block('1. Before they start', mLanding.state === 'partial' ? `Visits are measured since ${dm(mLanding.since)}.` : null, h('div', { class: 'fun' }, row('a', land, true))),
+    block('2. Once they start a chat', `Counted in chats started. A step marked “too few to judge” has fewer than ${MIN_N} people in it.`, h('div', { class: 'fun' }, steps.map((r, i) => row(i + 1, r, false)))))
+}
+
 function funnel(D, days) {
   const S = D.sections, v = val(S.funnel_visits), c = val(S.funnel_chain)
   if (!v && !c) return section('The journey, step by step', 'From the front door to a finished decision.', null, errBox('Journey', S.funnel_chain), errBox('Visits', S.funnel_visits))
@@ -460,9 +532,10 @@ function arrivals(D, days) {
   const googleInApp = dv.filter(r => r.in_app !== 'none' && r.in_app !== 'unknown').reduce((a, r) => a + r.google_tries, 0)
   return section('Who arrives, and on what', `Which channels bring people and which phones and apps they use, for ${PL}.`,
     'Source is the campaign tag on the link (utm_source) or, if there is none, the website that sent the visitor. “direct / unknown” means neither. Device and app come from the browser itself; only a coarse category is kept, never the raw browser string. Apps such as Instagram and Facebook open links in their own mini-browser, where Google sign-in is blocked.',
-    block('Where visitors come from', 'The first campaign tag or referring website seen for each visit.',
-      S.channels?.ok ? (ch.length ? table(['Source', 'Visits', 'Started a decision', 'Reached sign-in step', 'Saw a paywall', 'Paid'],
-        ch.map(r => [r.source, fmt(r.views), `${fmt(r.started)}${r.views ? ` (${pct(r.started, r.views)})` : ''}`, fmt(r.gate), fmt(r.paywall), fmt(r.paid)]), [1, 2, 3, 4, 5]) : empty('Not measured yet. Sources appear once the latest update is live.')) : errBox('Channels', S.channels),
+    block('Where visitors come from', 'The first campaign tags (utm_source, utm_medium, utm_campaign, utm_content) or referring website seen for each visit. Read “Started a decision” as the share of visits that typed a first message.',
+      S.channels?.ok ? (ch.length ? table(['Source', 'Placement', 'Campaign', 'Post', 'Visits', 'Started a decision', 'Reached sign-in step', 'Saw a paywall', 'Paid'],
+        ch.map(r => [r.source, r.medium || '–', r.campaign || '–', r.content || '–', fmt(r.views), `${fmt(r.started)}${r.views ? ` (${pct(r.started, r.views)})` : ''}`, fmt(r.gate), fmt(r.paywall), fmt(r.paid)]), [4, 5, 6, 7, 8]) : empty('Not measured yet. Sources appear once the latest update is live.')) : errBox('Channels', S.channels),
+      S.channels?.ok && ch.length >= 30 ? h('p', { class: 'small muted' }, 'Showing the 30 busiest links. Narrow the date range to see the rest.') : null,
       S.channels?.ok && ch.length && !tagged ? h('p', { class: 'small muted' }, 'No campaign tags yet. Add ?utm_source=... to the links you share so each channel shows up here.') : null),
     block('Which phones and apps', 'Visits by device and the app they were opened in.',
       S.devices?.ok ? (dv.length && recorded ? h('div', null,
@@ -606,7 +679,7 @@ let inflight = 0
 function render(D) {
   const days = D.params.days
   PL = D.params.custom ? `the period ${dm(D.params.from)} to ${dm(D.params.to)}` : `the last ${days} days`
-  app.replaceChildren(pulse(D, days), funnel(D, days), arrivals(D, days), growth(D, days), daily(D), signin(D, days), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), reliability(D, days), platform(D, days))
+  app.replaceChildren(pulse(D, days), dropoff(D, days), funnel(D, days), arrivals(D, days), growth(D, days), daily(D), signin(D, days), frontDoor(D, days), retention(D), inside(D, days), features(D, days), revenue(D, days), lifecycle(D, days), reliability(D, days), platform(D, days))
   const t = new Date(D.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: D.params.tz })
   document.getElementById('stamp').textContent = `Updated ${t} ${D.params.tz.split('/').pop().replace('_', ' ')}`
   document.getElementById('from').value = D.params.from; document.getElementById('to').value = D.params.to

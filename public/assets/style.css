@@ -183,3 +183,9 @@ tr:last-child td { border-bottom: 0; }
   .fun-row { grid-template-columns: 30px minmax(0, 1fr); }
   .fun-fig { grid-column: 2; }
 }
+
+/* where people drop off */
+.fun-track.neg { background: color-mix(in srgb, var(--neg) 16%, transparent); }
+.fun-bar.neg { background: var(--neg); }
+.fun-row.leak .fun-count { color: var(--ink); }
+.chip.bad { margin-left: 10px; color: var(--neg); border-color: color-mix(in srgb, var(--neg) 55%, transparent); font-weight: 500; }
