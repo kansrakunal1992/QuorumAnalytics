@@ -98,9 +98,19 @@ const EVENT_LABELS = {
   notification_opted_in: 'Opted in to notifications', notification_opened: 'Opened from a notification',
   notification_to_decision: 'Decided after a notification', mirror_viewed: 'Viewed the Mirror', mirror_unlocked: 'Mirror unlocked',
   paid_conversion: 'Paid conversion', gate_arm_assigned: 'Sign-in gate experiment assigned',
+  decision_prefill_loaded: 'Opened with text from a link', starter_picked: 'Picked a starting point',
+  starter_opened: 'Opened “More examples”', intro_video_opened: 'Opened the intro video',
 }
+// First-screen starting points (Nov 2026). Ids come from the app; unknown ids are shown as they are.
+const PLACEMENT_LABELS = { quick_start: 'One-tap start (the pills)', inline: 'Example sentence (removed in round 4)', more_examples: '“More examples” list' }
+const STARTER_LABELS = {
+  qs_career: 'Career', qs_money: 'Money', qs_business: 'Business', qs_relationships: 'Relationships', qs_personal: 'Personal', qs_small: 'Smaller calls',
+  job_offers: 'Two job offers', leave_job: 'Leaving a job', hard_conversation: 'A hard conversation', loan_or_invest: 'Loan or invest',
+}
+const POSITION_LABELS = { below: 'under the button', above: 'before the box' }
 const EVENT_GROUPS = [
   ['Decision flow', ['landing_view', 'decision_started', 'decision_checkpointed', 'decision_completed', 'another_decision_clicked']],
+  ['First screen', ['decision_prefill_loaded', 'starter_picked', 'starter_opened', 'intro_video_opened']],
   ['Sign-in', ['auth_prompt_seen', 'auth_started', 'magic_link_requested', 'auth_skipped', 'auth_completed']],
   ['Coming back', ['return_visit', 'review_date_chosen', 'habit_saved', 'park_started', 'park_saved', 'observation_seen', 'tally_seen',
     'install_prompt_seen', 'install_prompt_accepted', 'notification_opted_in', 'mirror_viewed']],
@@ -253,10 +263,10 @@ function dropoff(D, days) {
   const started = c.started
   const startRate = visits ? started / visits : 0
   const land = { name: 'The home page', ask: 'Did visitors start a decision at all?', enter: visits, stay: started, gone: Math.max(0, visits - started), share: visits ? Math.max(0, visits - started) / visits : 0, ok: true,
-    left: `${visitsWord} never typed a first message`,
+    left: `${visitsWord} never sent a first message`,
     means: visits ? `${fmt(started)} chats were started from ${fmt(visits)} ${visitsWord}: about ${Math.round(100 * startRate)} in every 100 start one. If one channel starts far more than the others (see Who arrives, and on what), the home page is fine and the audience is what differs. If every channel is low, the page is not making clear what to do.`
       : 'No visits recorded in this period.',
-    tries: 'Compare start rates by channel, then look at the headline, the example prompts and whether the input box is visible without scrolling on a phone.' }
+    tries: `Compare start rates by channel, then look at the headline, the one-tap start and whether the box and button are visible without scrolling on a phone.${v.quick_start_taps ? ` ${fmt(v.quick_start_taps)} tapped a one-tap start in this period.` : ''}` }
   const per100 = n => (started ? Math.round((100 * n) / started) : 0)
   const summary = started >= 1 ? `Of every 100 chats started, about ${per100(confirmN)} reach the confirm screen, ${per100(c.council_started)} get a Council and ${per100(c.locked)} lock in a decision.` : null
 
@@ -270,6 +280,29 @@ function dropoff(D, days) {
     block('2. Once they start a chat', `Counted in chats started. A step marked “too few to judge” has fewer than ${MIN_N} people in it.`, h('div', { class: 'fun' }, steps.map((r, i) => row(i + 1, r, false)))))
 }
 
+// What the people who opened the intro video did next. Only browsers with a device id can be followed (most first-time visitors
+// have none until they accept cookies), so this is a sample and says so. It shows a link, not a cause: people who watch a video
+// may simply be the more curious ones.
+function videoNote(sec) {
+  const r = val(sec)   // a single-row result: metrics.js unwraps it to an object
+  if (!r || !r.opened) return null
+  return `Of ${fmt(r.opened)} recognisable browsers that opened it, ${fmt(r.opened_started)} (${pct(r.opened_started, r.opened)}) started a decision; of ${fmt(r.others)} others, ${fmt(r.others_started)} (${pct(r.others_started, r.others)}). A small sample, and not proof the video caused it.`
+}
+// Which starting points were tapped (the pills by kind, and where they sat), as a quiet table under block 1.
+function starterTable(sec) {
+  const rows = sec && sec.ok ? rowsOf(sec) : []
+  if (!rows.length) return null
+  return h('details', null, h('summary', null, 'Which starting points were tapped'),
+    table(['Where', 'Which', 'Pills sat', 'Taps'], rows.map(r => [PLACEMENT_LABELS[r.placement] || r.placement, STARTER_LABELS[r.example] || r.example, POSITION_LABELS[r.position] || r.position || '–', fmt(r.n)]), [3]))
+}
+// How the first messages began, in words. Pill taps are counted from the taps, so this is "about".
+function startedHow(v, fm) {
+  if (!fm || !fm.started) return null
+  const bits = []
+  if (v && v.quick_start_taps) bits.push(`about ${fmt(v.quick_start_taps)} began with a one-tap start`)
+  if (fm.from_link) bits.push(`${fmt(fm.link_as_is)} sent a link’s text unchanged and ${fmt(fm.link_edited)} edited it`)
+  return bits.length ? `${fmt(fm.started)} first messages recorded: ${bits.join('; ')}. The rest were typed or spoken.` : null
+}
 function funnel(D, days) {
   const S = D.sections, v = val(S.funnel_visits), c = val(S.funnel_chain)
   if (!v && !c) return section('The journey, step by step', 'From the front door to a finished decision.', null, errBox('Journey', S.funnel_chain), errBox('Visits', S.funnel_visits))
@@ -285,7 +318,12 @@ function funnel(D, days) {
       funRow('b', 'Saw the cookie banner', 'The banner asks whether Quorum may remember this browser. Without a yes, a returning visitor looks like a stranger.', v.consent_shown, v.landing_views, { m: mm('consent_shown') }),
       funRow('c', 'Accepted cookies', 'Said yes, so Quorum can recognise them next time.', v.consent_accepted, v.consent_shown, { m: mm('consent_accepted') }),
       funRow('d', 'Declined cookies', 'Said no. They can still use Quorum, but cannot be recognised later.', v.consent_rejected, v.consent_shown, { m: mm('consent_rejected') }),
-      funRow('e', 'Did not answer the banner', 'Carried on without choosing. Their decisions have no identity attached.', none, v.consent_shown, { m: mm('consent_shown') }))))
+      funRow('e', 'Did not answer the banner', 'Carried on without choosing. Their decisions have no identity attached.', none, v.consent_shown, { m: mm('consent_shown') }),
+      funRow('f', 'Opened with text already in the box', 'A link (a post, a message) carried a scenario, so the box was filled in. They still had to edit or send it.', v.prefill_loaded, v.landing_views, { m: mm('decision_prefill_loaded') }),
+      funRow('g', 'Tapped a one-tap start', 'Tapped Career, Money, Business and so on, which sends “It’s about my career.” as the first message. Counts taps, from the day the pills went live.', v.quick_start_taps, v.landing_views),
+      funRow('h', 'Opened “More examples”', 'Opened the longer list of example questions.', v.more_examples_opened, v.landing_views),
+      funRow('i', 'Opened the intro video', 'Tapped “Watch the intro”. Nothing plays until they do.', v.intro_video_opened, v.landing_views, { m: mm('intro_video_opened'), extra: videoNote(S.video_effect) })),
+      starterTable(S.starter_detail)))
   }
 
   // ----- inside each chat -----
@@ -300,7 +338,7 @@ function funnel(D, days) {
     for (let i = 1; i < chain.length; i++) { const d = Math.max(0, chain[i - 1][2] - chain[i][2]); lostAt[chain[i][0]] = d; if (d > 0) drops.push({ from: chain[i - 1][1], to: chain[i][1], d, of: chain[i - 1][2] }) }
     const gateExtra = c.gate ? `${fmt(c.gate_passed)} of ${fmt(c.gate)} (${pct(c.gate_passed, c.gate)}) signed in and went on to the Council.` : null
     parts.push(block('2. Inside each chat', `Counted in chats. ${fmt(B)} chats were started in ${PL}; the percentages are out of that number.`, h('div', { class: 'fun' },
-      funRow(1, 'Started a chat', 'Typed a first message about a decision.', B, B),
+      funRow(1, 'Started a chat', 'Sent a first message about a decision: typed, spoken, sent from a link, or tapped as a kind of decision.', B, B, { extra: startedHow(v, val(S.funnel_first_message)) }),
       funRow(2, 'Reached the confirm screen', 'The chat wrapped up and Quorum showed a short summary to check.', c.summary, B, { m: mSum, lost: lostAt.summary }),
       funRow(3, 'Tapped “Convene the Council”', 'Confirmed the summary and asked the six advisors to weigh in.', c.launched, B, { m: mLaunch, lost: lostAt.launched }),
       funRow(4, 'Reached the sign-in step', 'Asked to sign in just before the Council starts. Only people who were not already signed in see this.', c.gate, B, { m: mGate, extra: gateExtra }),
@@ -532,9 +570,9 @@ function arrivals(D, days) {
   const googleInApp = dv.filter(r => r.in_app !== 'none' && r.in_app !== 'unknown').reduce((a, r) => a + r.google_tries, 0)
   return section('Who arrives, and on what', `Which channels bring people and which phones and apps they use, for ${PL}.`,
     'Source is the campaign tag on the link (utm_source) or, if there is none, the website that sent the visitor. “direct / unknown” means neither. Device and app come from the browser itself; only a coarse category is kept, never the raw browser string. Apps such as Instagram and Facebook open links in their own mini-browser, where Google sign-in is blocked.',
-    block('Where visitors come from', 'The first campaign tags (utm_source, utm_medium, utm_campaign, utm_content) or referring website seen for each visit. Read “Started a decision” as the share of visits that typed a first message.',
-      S.channels?.ok ? (ch.length ? table(['Source', 'Placement', 'Campaign', 'Post', 'Visits', 'Started a decision', 'Reached sign-in step', 'Saw a paywall', 'Paid'],
-        ch.map(r => [r.source, r.medium || '–', r.campaign || '–', r.content || '–', fmt(r.views), `${fmt(r.started)}${r.views ? ` (${pct(r.started, r.views)})` : ''}`, fmt(r.gate), fmt(r.paywall), fmt(r.paid)]), [4, 5, 6, 7, 8]) : empty('Not measured yet. Sources appear once the latest update is live.')) : errBox('Channels', S.channels),
+    block('Where visitors come from', 'The first campaign tags (utm_source, utm_medium, utm_campaign, utm_content) or referring website seen for each visit. Read “Started a decision” as the share of visits that sent a first message. “Text in the box” counts visits that arrived through a ?scenario= or ?decision= link, so a post’s scenario link shows up here.',
+      S.channels?.ok ? (ch.length ? table(['Source', 'Placement', 'Campaign', 'Post', 'Visits', 'Text in the box', 'Started a decision', 'Reached sign-in step', 'Saw a paywall', 'Paid'],
+        ch.map(r => [r.source, r.medium || '–', r.campaign || '–', r.content || '–', fmt(r.views), fmt(r.prefilled), `${fmt(r.started)}${r.views ? ` (${pct(r.started, r.views)})` : ''}`, fmt(r.gate), fmt(r.paywall), fmt(r.paid)]), [4, 5, 6, 7, 8, 9]) : empty('Not measured yet. Sources appear once the latest update is live.')) : errBox('Channels', S.channels),
       S.channels?.ok && ch.length >= 30 ? h('p', { class: 'small muted' }, 'Showing the 30 busiest links. Narrow the date range to see the rest.') : null,
       S.channels?.ok && ch.length && !tagged ? h('p', { class: 'small muted' }, 'No campaign tags yet. Add ?utm_source=... to the links you share so each channel shows up here.') : null),
     block('Which phones and apps', 'Visits by device and the app they were opened in.',
@@ -570,10 +608,12 @@ function reliability(D, days) {
   const S = D.sections, lat = val(S.latency), errs = rowsOf(S.client_errors)
   const hasLat = lat && (lat.api_n || lat.convene_n || lat.confirm_n)
   return section('Speed and errors', `How long people wait, and what went wrong, for ${PL}.`,
-    'Waits are measured from the person’s side: from sending a message to the reply appearing. “Convene to first advisor” skips anyone who was asked to sign in, so it measures the AI, not the sign-in. Errors are failures the person experienced; each kind is capped per visit so a retry loop cannot flood the count. Both start counting once the latest update is live.',
+    'Waits are measured from the person’s side: from sending a message to the reply appearing. Only replies that showed tap-answer cards are timed, and the first reply is split from later ones because they behave differently (later replies got faster in the Nov 2026 speed-up, so compare before and after it with a release marker). “Convene to first advisor” skips anyone who was asked to sign in, so it measures the AI, not the sign-in. Errors are failures the person experienced; each kind is capped per visit so a retry loop cannot flood the count. Both start counting once the latest update is live.',
     block('How long people wait', null,
       S.latency?.ok ? (hasLat ? stats([
         lat.api_n ? { v: secs(lat.api_p50 == null ? null : Number(lat.api_p50)), l: `typical wait for a chat reply (slowest 1 in 20: ${secs(Number(lat.api_p95))}, ${fmt(lat.api_n)} replies)` } : null,
+        lat.api_first_n ? { v: secs(Number(lat.api_first_p50)), l: `typical wait for the first reply of a chat (${fmt(lat.api_first_n)} replies)` } : null,
+        lat.api_later_n ? { v: secs(Number(lat.api_later_p50)), l: `typical wait for later replies (${fmt(lat.api_later_n)} replies)` } : null,
         lat.convene_n ? { v: secs(lat.convene_p50 == null ? null : Number(lat.convene_p50) * 1000), l: `typical wait from “Convene” to the first advisor (slowest 1 in 20: ${secs(Number(lat.convene_p95) * 1000)}, ${fmt(lat.convene_n)} Councils)` } : null,
         lat.confirm_n ? { v: secs(Number(lat.confirm_p50)), l: `typical time spent on the confirm screen (${fmt(lat.confirm_n)} people)` } : null]) : empty('Not measured yet. This appears once the latest update is live.')) : errBox('Speed', S.latency)),
     block('What went wrong', 'Failures people ran into, most common first.',

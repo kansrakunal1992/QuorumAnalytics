@@ -25,6 +25,27 @@ One dependency (`pg`), no build step, no third-party scripts or fonts.
 | **Speed and errors** | Typical wait for a chat reply and for the first advisor, and the failures people ran into |
 | **Platform and data health** | Model routing, institutions, and a list of any panel that could not load |
 
+### First-screen tracking (Nov 2026)
+
+Reads the events added by the first-screen work in the main app. Nothing to configure and no SQL to run; all of it is aggregate counts.
+
+| Where | What it shows |
+|---|---|
+| **The journey, block 1** (rows f to i) | Opened with text already in the box (a `?scenario=` or `?decision=` link), tapped a one-tap start, opened "More examples", opened the intro video. Each is a count of arrivals or taps out of home page visits. A collapsed table, "Which starting points were tapped", splits the taps by kind (Career, Money, ...) and by where the pills sat |
+| **The journey, block 2, step 1** | "Started a chat" now says how the first messages began: about how many began with a one-tap start, how many sent a link's text unchanged, how many edited it. The rest were typed or spoken |
+| **Intro video** (row i) | Of the browsers we can recognise (those with a device id), how many that opened the intro video went on to start a decision, next to the rest. A small sample that shows a link, not a cause |
+| **Who arrives, and on what** | New column "Text in the box": visits that arrived through a scenario link, per post (`utm_content`), beside that post's starts. This is where a post's `?scenario=` link shows up |
+| **Speed and errors** | The typical chat-reply wait is now split into the first reply of a chat and later replies. Only replies that showed tap-answer cards are timed |
+| **The front door** | A "First screen" group with friendly labels for `decision_prefill_loaded`, `starter_picked`, `starter_opened` and `intro_video_opened` |
+
+Event names and properties it reads: `starter_picked` (`placement` = `quick_start` for the pills, `inline` for the example sentences removed in round 4, none for the older "More examples" list; `example`; `position` = `below` or `above`), `starter_opened`, `decision_prefill_loaded`, `intro_video_opened`, and `decision_started` (`prefilled`, `prefill_edited`).
+
+**Compare before and after.** Set `RELEASE_MARKERS` in Railway to the real deploy dates, for example
+`RELEASE_MARKERS=YYYY-MM-DD:First screen round 1,YYYY-MM-DD:Pills, voice and faster replies,YYYY-MM-DD:Round 4 simpler screen`
+and the charts and the before/after check will draw a line on each day. With under about 100 visits a week, treat any rate change as a hint until a few weeks of data are in.
+
+**Not measured yet** (the main app does not send an event for them): voice input use, the slim cookie bar versus the full banner, and anyone's time on the page before leaving. Each is one `track()` line in the app if you want it.
+
 **Privacy.** Every query is an aggregate (counts and dates). The dashboard never selects decision text,
 message content, notes or insight text, and does not list individual users. Every query also runs inside a
 read-only transaction, so this app cannot change your data.
